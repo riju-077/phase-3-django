@@ -1,0 +1,79 @@
+  What is a slug?
+
+  A slug is a URL-friendly version of a piece of text. Lowercase, hyphens instead of spaces, no special characters. That's it.
+
+  Side by side:
+
+  ┌────────────────────────────────┬──────────────────────────────┐
+  │     name (what humans see)     │ slug (what goes in the URL)  │
+  ├────────────────────────────────┼──────────────────────────────┤
+  │ "Django Web Framework"         │ "django-web-framework"       │
+  ├────────────────────────────────┼──────────────────────────────┤
+  │ "PostgreSQL"                   │ "postgresql"                 │
+  ├────────────────────────────────┼──────────────────────────────┤
+  │ "Data Structures & Algorithms" │ "data-structures-algorithms" │
+  ├────────────────────────────────┼──────────────────────────────┤
+  │ "Akash's First Post!"          │ "akashs-first-post"          │
+  └────────────────────────────────┴──────────────────────────────┘
+
+  ---
+  Why slugs exist — the URL story
+
+  URLs have rules. They were designed in the 1990s when ASCII-only text was the norm. So URLs hate:
+  - Spaces (have to be encoded as %20 — ugly)
+  - Special characters like !, ?, &, =, # (those have meaning in URLs — ? separates query strings, # marks fragments, & separates params)
+  - Capital letters (technically allowed but case-sensitivity is messy across servers)
+  - Non-ASCII (emojis, accented characters — supported now via punycode but flaky)
+
+  If you tried to use the post title directly in a URL:
+
+  https://blog.com/posts/Akash's First Post!/
+
+  The browser would actually have to encode it as:
+
+  https://blog.com/posts/Akash%27s%20First%20Post%21/
+
+  Compare that to the slug version:
+
+  https://blog.com/posts/akashs-first-post/
+
+  Clean. Readable. Copy-pasteable into Slack/WhatsApp without breaking. Google's crawler can read keywords from it for SEO.
+
+  So the rule on every modern website: the title is for humans on the page, the slug is for the URL bar. Two fields, two purposes.
+
+  ---
+  Why SlugField instead of just CharField?
+
+  You could store a slug in a CharField. Technically nothing stops you. But Django gives you SlugField because it does three useful things
+  automatically:
+
+  1. Built-in validation. SlugField only accepts letters, numbers, hyphens, and underscores. If you (or a form, or the API) tries to save "my
+  post!" into a SlugField, Django rejects it with a clear error. With CharField, you'd silently store invalid data and break URLs later.
+
+  2. Automatic database index. SlugField sets db_index=True by default. Why does this matter? You'll be looking up rows by slug constantly:
+
+  Category.objects.get(slug='django')
+
+  That's the database doing a search: "find me the row where slug = 'django'". Without an index, it scans every row in the table. With an
+  index, it jumps straight to the answer. SlugField gives you the index for free.
+
+  3. Semantic clarity. When another developer reads slug = models.SlugField(...), they instantly know "this is meant for URL identifiers." If
+  they saw slug = models.CharField(...), they'd have to dig into how it's used to figure out the intent. Same reason EmailField exists when you
+   could store an email in CharField — Django provides specialized fields for common patterns.
+
+  ---
+  A small bonus — generating slugs from titles
+
+  You usually don't type slugs by hand. Django ships with a helper:
+
+  from django.utils.text import slugify
+
+  slugify("Akash's First Post!")
+  # → 'akashs-first-post'
+
+  Lowercases, strips special chars, replaces spaces with hyphens. We'll likely auto-generate the slug from the title on save in a later step.
+  For now we just have the field; we'll fill in how it gets populated when we get to the form/view layer.
+
+  ---
+  So in your Category, the two fields work as a pair: name is what the reader sees, slug is what shows up in /categories/django/. unique=True
+  on both is just saying "no two categories can have the same name, no two categories can have the same slug."
