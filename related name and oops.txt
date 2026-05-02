@@ -1,0 +1,191 @@
+ Q1: What is an "attribute"?                                                                                                                  
+                                                                                                                                               
+  Simplest possible definition:                                                                                                                
+                                                            
+  ▎ An attribute is anything you access with a dot.
+
+  That's the whole concept. If you can write obj.something, then something is an attribute of obj.
+
+  You've already been using attributes constantly in your Bank class — you just didn't have the name for it:
+
+  class Bank:
+      def __init__(self, name, ifsc):
+          self.name = name        # creates "name" as an attribute on the instance
+          self.ifsc = ifsc        # creates "ifsc" as an attribute on the instance
+
+
+  sbi = Bank("SBI", "SBI0001")
+
+  sbi.name    # → "SBI"          ← "name" is an attribute of sbi
+  sbi.ifsc    # → "SBI0001"      ← "ifsc" is an attribute of sbi
+
+  sbi.name reads as: "reach into the sbi object and pull out the name attribute."
+
+  Same in Django:
+
+  post = Post.objects.get(id=1)
+
+  post.title       # ← "title" is an attribute (a CharField)
+  post.author      # ← "author" is an attribute (a ForeignKey, returns a User)
+  post.author.username  # ← "username" is an attribute of the user
+
+  Every dot in your code = walking into an attribute. That's it.
+
+  When I say related_name='posts' adds an attribute called posts to the User class, I mean: Django makes it possible for you to write
+  akash.posts and get back a collection of posts. That's all. The dot-accessible name is posts because you set related_name='posts'.
+
+  ---
+  Q2: Why don't we write sbi = Bank() lines in models.py?
+
+  This is the bigger insight, and it's a really good question. The honest answer: models.py and your OOP practice script are completely
+  different kinds of files.
+
+  Your OOP practice script
+
+  class Bank:
+      def __init__(self, name, ifsc):
+          self.name = name
+          self.ifsc = ifsc
+
+  sbi = Bank("SBI", "SBI0001")
+  icici = Bank("ICICI", "ICIC0001")
+  print(sbi.name)
+
+  You run this script once: python script.py. It runs top to bottom, prints output, exits. Class definition AND instance creation live in the
+  same file because the file's whole job is "demo the class."
+
+  models.py in Django
+
+  A Django project doesn't run-and-exit. It's a server that runs forever, waiting for things to happen. models.py is loaded once at startup so
+  Django knows the table shape — and then it just sits there.
+
+  If you put Category(name="Django").save() at the bottom of models.py, Django would try to create that row every single time the server
+  starts. Wrong. Instances should be created in response to events, not at file-load time.
+
+  So where DO instances actually get created?
+
+  At runtime, in response to events. Many places:
+
+  ┌─────────────────────────────────────────────┬──────────────────────────────────────────────────────────────────────────────────────────┐
+  │                   Trigger                   │                                       What happens                                       │
+  ├─────────────────────────────────────────────┼──────────────────────────────────────────────────────────────────────────────────────────┤
+  │ User clicks "Add Category" in the Django    │ Django runs Category(name="Django", slug="django").save() in memory                      │
+  │ admin                                       │                                                                                          │
+  ├─────────────────────────────────────────────┼──────────────────────────────────────────────────────────────────────────────────────────┤
+  │ User submits a form on your site that       │ Your view function runs Post(title=..., body=..., author=request.user).save()            │
+  │ creates a post                              │                                                                                          │
+  ├─────────────────────────────────────────────┼──────────────────────────────────────────────────────────────────────────────────────────┤
+  │ API client sends POST /api/posts/ (DRF)     │ The DRF view does the same thing                                                         │
+  ├─────────────────────────────────────────────┼──────────────────────────────────────────────────────────────────────────────────────────┤
+  │ You run python manage.py shell and type     │ You can create instances yourself, exactly like sbi = Bank() — but for exploration, not  │
+  │ code manually                               │ as part of the app                                                                       │
+  ├─────────────────────────────────────────────┼──────────────────────────────────────────────────────────────────────────────────────────┤
+  │ A management command, test fixture, or data │ Code in those files creates instances                                                    │
+  │  migration                                  │                                                                                          │
+  └─────────────────────────────────────────────┴──────────────────────────────────────────────────────────────────────────────────────────┘
+
+  Concretely: when later we build the "create post" page, the view function will look something like this:
+
+  def create_post(request):
+      if request.method == 'POST':
+          new_post = Post(
+              title=request.POST['title'],
+              body=request.POST['body'],
+              author=request.user,
+          )
+          new_post.save()       # ← THIS is your sbi = Bank(...) moment, just triggered by a click
+          return redirect('home')
+
+  That line is the equivalent of sbi = Bank("SBI", "SBI0001"). Same syntax shape: class name, parens, keyword args, save. The only difference
+  is when it runs — when a user submits a form, not when a script loads.
+
+  ---
+  So yes — Django does handle a lot under the hood
+
+  Think of it like this:
+
+  ┌─────────────────────────────────────────────┬────────────────────────────────────────────────────────────────────────────┐
+  │               Your OOP script               │                                   Django                                   │
+  ├─────────────────────────────────────────────┼────────────────────────────────────────────────────────────────────────────┤
+  │ You write the class                         │ You write the class (Post, Category) — same                                │
+  ├─────────────────────────────────────────────┼────────────────────────────────────────────────────────────────────────────┤
+  │ You manually create instances at the bottom │ The Django admin, views, API endpoints create instances when events happen │
+  ├─────────────────────────────────────────────┼────────────────────────────────────────────────────────────────────────────┤
+  │ Script runs once, exits                     │ Server runs forever, creating instances in response to traffic             │
+  └─────────────────────────────────────────────┴────────────────────────────────────────────────────────────────────────────┘
+
+  The instance creation isn't gone in Django. It's just been moved from "the bottom of the file" to "wherever the user/system triggers it."
+
+  ---
+  Try it yourself — see this with your own eyes
+
+  Once we finish models.py and run migrations, you'll be able to do:
+
+  python manage.py shell
+
+  That gives you a Python REPL with Django already loaded. Then you can type exactly what you do in your Bank practice:
+
+  >>> from posts.models import Category
+  >>> django = Category(name="Django", slug="django")    # like sbi = Bank(...)
+  >>> django.save()                                       # writes to PostgreSQL
+  >>> django.name                                         # → 'Django' — accessing an attribute
+  >>> Category.objects.all()                              # see all categories
+
+  Same exact pattern as your Bank class. The only difference is .save() writes the instance to PostgreSQL instead of just keeping it in memory.
+
+  When you see this in action, it'll click hard.
+
+  ---
+  Tying it back to related_name
+
+  Once you accept that instances get created at runtime via events:
+
+  akash = User.objects.get(username='akash')   # fetch one row from auth_user table
+  akash.posts.all()                            # walk the reverse relation
+
+  The posts attribute on akash is just a dot-accessible name Django invented at startup based on related_name='posts' in your FK declaration.
+  It's not a column. It's not stored. It's a Python-side label for a query.
+
+  ---
+You're 90% there. One precise correction so the picture stays clean.                                                                         
+                                         
+  The table vs the class — keep these separate                                                                                                 
+   
+  You said "creates an attribute in the user table(model) name posts." This is the one bit to tighten, because table and class/model live in   
+  different layers:                                         
+
+  ┌──────────────────────────────────────────────────────┬───────────────────────────────────────┬─────────────────────────────────────────┐
+  │                        Layer                         │              What it is               │        Touched by related_name?         │
+  ├──────────────────────────────────────────────────────┼───────────────────────────────────────┼─────────────────────────────────────────┤
+  │ Database table (auth_user in PostgreSQL — rows and   │ The actual data on disk               │ No. Zero changes. Same 11 columns as    │
+  │ columns)                                             │                                       │ before.                                 │
+  ├──────────────────────────────────────────────────────┼───────────────────────────────────────┼─────────────────────────────────────────┤
+  │ Python class (User, the model object living in       │ The Python class with attributes and  │ Yes. Django attaches a .posts attribute │
+  │ Django's memory)                                     │ methods                               │  to it.                                 │
+  └──────────────────────────────────────────────────────┴───────────────────────────────────────┴─────────────────────────────────────────┘
+
+  related_name='posts' adds an attribute to the Python User class in memory, NOT to the user table in PostgreSQL. The table is untouched. If
+  you opened pgAdmin and looked at auth_user, you'd see no posts column anywhere.
+
+  So the corrected sentence:
+
+  ▎ "It creates an attribute called posts on the User class (in Python memory). The user table in the database stays exactly the same."
+
+  ---
+  Small tweak to the rest
+
+  You said "this attribute runs in the runtime thats why i dont type it since its something that is triggered from the users side like the UI"
+  — close, but two separate ideas got merged. Let me untangle:
+
+  1. related_name exists in models.py — you DO type it, just once, when defining the FK. We're about to do that now.
+  2. What you don't type in models.py is the usage (akash.posts.all()). That happens elsewhere, at runtime, in views/shell/templates —
+  triggered by events like a user visiting a page or clicking a button.
+
+  So the right framing:
+
+  ▎ "I type related_name='posts' once, in models.py. Later, in views and templates, I (or Django) write user.posts.all() — and that is the part
+  ▎  that runs every time a user visits a page."
+
+  The attribute itself is created when Django loads. The query behind user.posts.all() runs at request time.
+
+  ---
