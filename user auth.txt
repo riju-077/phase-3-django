@@ -1,0 +1,147 @@
+ What a foreign key actually is                                                                                                               
+                                                                                                                                               
+  Forget Django syntax for a second. Just look at the database.                                                                                
+                                                                                                                                               
+  Your posts table will have columns. One of them is author. What does the database physically store in that column for each row? Not the whole
+   user object. Not the username. Just an integer — the id of a row in the User table.
+
+  Here's what it looks like on disk:
+
+  auth_user table (Django's built-in users):
+
+  ┌─────┬──────────┬───────────┐
+  │ id  │ username │   email   │
+  ├─────┼──────────┼───────────┤
+  │ 1   │ admin    │ admin@... │
+  ├─────┼──────────┼───────────┤
+  │ 5   │ akash    │ a@...     │
+  ├─────┼──────────┼───────────┤
+  │ 7   │ priya    │ p@...     │
+  └─────┴──────────┴───────────┘
+
+  posts_post table (yours):
+
+  ┌─────┬───────────────┬──────┬───────────┐
+  │ id  │     title     │ body │ author_id │
+  ├─────┼───────────────┼──────┼───────────┤
+  │ 1   │ "First post"  │ ...  │ 5         │
+  ├─────┼───────────────┼──────┼───────────┤
+  │ 2   │ "Second post" │ ...  │ 5         │
+  ├─────┼───────────────┼──────┼───────────┤
+  │ 3   │ "Hello"       │ ...  │ 7         │
+  └─────┴───────────────┴──────┴───────────┘
+
+  The author_id = 5 literally means "this post is written by the user whose id is 5." That's it. A foreign key is just a number stored in your
+  row that points at another row in another table.
+
+  When in your Python code you write post.author.username, Django sees the author_id, runs a SQL JOIN under the hood — "give me the user where
+  id = 5" — and hands you the user object. The "magic" is just follow the pointer, look up the row.
+
+  This is the same idea as a pointer in C or a reference in Java — a tiny, cheap value that says "the real thing lives over there."
+
+  ▎ Naming detail: you write author = ForeignKey(User, ...) in Python. Django stores it in the database as a column called author_id 
+  ▎ (auto-appends _id). When you access it in Python, you say post.author (the User object); when you query the raw column, it's author_id.
+
+  ---
+  The new import
+
+  User isn't built into your code — it's Django's built-in user model living at django.contrib.auth.models.User. (That auth_user table you saw
+  in pgAdmin is exactly this model.) So at the top of models.py, add:
+
+  from django.contrib.auth.models import User
+
+  Right under your existing from django.db import models line.
+
+  ---
+  The author field
+
+  Inside your Post class, after body, add:
+
+  author = models.ForeignKey(User, on_delete=models.CASCADE)
+
+  Read it left to right:
+
+  - models.ForeignKey — this column is a foreign key. It stores the id of a row in another table.
+  - User — the table it points at. Could be any model class.
+  - on_delete=models.CASCADE — the rule we picked together: when a user is deleted, cascade the deletion to their posts. (Same CASCADE we
+  discussed in the YouTube channel-deleted story.)
+
+  ---
+  So to recap what you're typing in this beat:
+
+  1. Add the new import at the top of the file
+  2. Inside Post, after body, add the author line above
+
+  Type those, save, and tell me when done. Next beat: there's one more piece I deliberately left off the author line (called related_name), and
+   we'll add the category field — they go together cleanly.
+
+✻ Crunched for 1m 3s
+
+❯ the deafult user model i thought it only had two columns id and username but here u showed a third column email too                          
+                                                                                                                      
+● Good catch — and worth clearing up because the default User model has way more fields than you might think. My table was abbreviated for     
+  illustration. Here's the full picture. 
+                                                                                                                                               
+  The actual columns in auth_user
+                                                                                                                                               
+  Django's built-in User model gives you all of these out of the box:
+
+  ┌──────────────┬───────────────────────────────────┐
+  │    Column    │          What it stores           │
+  ├──────────────┼───────────────────────────────────┤
+  │ id           │ Auto primary key                  │
+  ├──────────────┼───────────────────────────────────┤
+  │ password     │ Hashed password (never plaintext) │
+  ├──────────────┼───────────────────────────────────┤
+  │ last_login   │ Timestamp of last login           │
+  ├──────────────┼───────────────────────────────────┤
+  │ is_superuser │ Has all permissions?              │
+  ├──────────────┼───────────────────────────────────┤
+  │ username     │ Login name (unique)               │
+  ├──────────────┼───────────────────────────────────┤
+  │ first_name   │ Given name                        │
+  ├──────────────┼───────────────────────────────────┤
+  │ last_name    │ Family name                       │
+  ├──────────────┼───────────────────────────────────┤
+  │ email        │ Email address                     │
+  ├──────────────┼───────────────────────────────────┤
+  │ is_staff     │ Can access the admin?             │
+  ├──────────────┼───────────────────────────────────┤
+  │ is_active    │ Account enabled?                  │
+  ├──────────────┼───────────────────────────────────┤
+  │ date_joined  │ Registration timestamp            │
+  └──────────────┴───────────────────────────────────┘
+
+  Plus two many-to-many tables for groups and user_permissions. That's why session 3 noted that django.contrib.auth produces 6 tables — the
+  user table itself plus join tables for those M2M relationships.
+
+  So roughly 11 columns on the user row itself, not 2.
+
+  ---
+  Verify it yourself in pgAdmin (good habit)
+
+  You already have pgAdmin connected. Try this:
+
+  1. Open pgAdmin → Servers → blog → Databases → blog_db → Schemas → public → Tables
+  2. Right-click auth_user → View/Edit Data → All Rows
+  3. Look at the column headers across the top.
+
+  You'll see all those columns sitting there. Right now there's probably zero or one row (whichever superuser you've made). But the shape of
+  the table is there regardless of how many rows it holds.
+
+  This is a habit worth forming: when in doubt about what a table actually looks like, go look at it. pgAdmin is your X-ray. Don't rely on
+  memory or my truncated tables.
+
+  ---
+  Why you might have thought it was just id + username
+
+  Two reasons it feels that way:
+
+  1. Most code only uses a couple of fields. Day to day, you mostly access user.username and user.id. The other fields exist but you don't
+  touch them often. Easy to forget the rest is there.
+  2. In tutorials and examples, people show abbreviated tables — exactly like I did. Whenever you see a 2-column or 3-column user table in an
+  article, assume the full thing is bigger.
+
+  ---
+  Mental model going forward: the default User model is a full-featured account record — username, password (hashed!), name, email, timestamps,
+   permission flags. It's not a stub. That's why so many real apps just use it as-is for years before bothering to swap in a custom one.
