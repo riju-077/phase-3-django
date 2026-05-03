@@ -1,0 +1,226 @@
+ Now to the dummy table.                 
+                                                                                                                                               
+  ---                                                                                                                                          
+  A realistic snapshot of posts_post once it has some data                                                                                     
+                                                                                                                                               
+  Imagine akash and priya have been writing for a few weeks. Here's what the table might literally look like in PostgreSQL:
+
+  ┌─────┬───────────────────────────┬───────────┬────────────────┬──────────────────┬──────────────────┬───────────┬───────┐
+  │ id  │           title           │ author_id │  category_id   │    created_at    │    updated_at    │ published │ views │
+  ├─────┼───────────────────────────┼───────────┼────────────────┼──────────────────┼──────────────────┼───────────┼───────┤
+  │ 1   │ "Django ORM basics"       │ 5 (akash) │ 2 (Django)     │ 2026-04-15 10:00 │ 2026-04-15 10:00 │ True      │ 247   │
+  ├─────┼───────────────────────────┼───────────┼────────────────┼──────────────────┼──────────────────┼───────────┼───────┤
+  │ 2   │ "Async views"             │ 5 (akash) │ 2 (Django)     │ 2026-04-20 14:30 │ 2026-04-25 09:12 │ True      │ 89    │
+  ├─────┼───────────────────────────┼───────────┼────────────────┼──────────────────┼──────────────────┼───────────┼───────┤
+  │ 3   │ "PG indexing — DRAFT"     │ 5 (akash) │ 1 (PostgreSQL) │ 2026-04-28 18:45 │ 2026-04-30 22:15 │ False     │ 0     │
+  ├─────┼───────────────────────────┼───────────┼────────────────┼──────────────────┼──────────────────┼───────────┼───────┤
+  │ 4   │ "Hot take I might regret" │ 5 (akash) │ NULL           │ 2026-05-01 03:22 │ 2026-05-01 03:22 │ False     │ 0     │
+  ├─────┼───────────────────────────┼───────────┼────────────────┼──────────────────┼──────────────────┼───────────┼───────┤
+  │ 5   │ "Welcome to my blog"      │ 7 (priya) │ NULL           │ 2026-04-10 09:00 │ 2026-04-10 09:00 │ True      │ 1543  │
+  └─────┴───────────────────────────┴───────────┴────────────────┴──────────────────┴──────────────────┴───────────┴───────┘
+
+  I dropped body from this view to keep the table readable — pretend each row has the full long text in there too.
+
+  ---
+  What's happening in each row, reader-POV
+
+  - Row 1 — akash published "Django ORM basics" on Apr 15, never edited it, 247 readers have seen it. published=True. Visible on the homepage.
+  - Row 2 — akash published "Async views" on Apr 20, edited it later (notice updated_at is 5 days after created_at). Still live.
+  published=True.
+  - Row 3 — akash started a draft about Postgres indexing on Apr 28, came back and worked on it a couple of days later, but hasn't released it
+  yet. published=False. Readers cannot see this row because the homepage filters by WHERE published = True. Only akash sees it in his own draft
+   list.
+  - Row 4 — akash wrote a controversial post at 3am, hit save, immediately had second thoughts and unticked the "publish" box. published=False.
+   Lives in his drafts. View count is 0 because no reader has the URL.
+  - Row 5 — priya's welcome post. Published immediately, never edited, picked up 1,543 views over time. published=True.
+
+  ---
+  When does published get flipped to True or False?
+
+  It's controlled entirely by the form on the create/edit post page. Three concrete scenarios:
+
+  ┌────────────────────────────────────────────┬─────────────────────────────────────────────────────┬─────────────────────────────────────┐
+  │                 Situation                  │                   What akash does                   │         Effect on published         │
+  ├────────────────────────────────────────────┼─────────────────────────────────────────────────────┼─────────────────────────────────────┤
+  │ Writes a new post and clicks "Save"        │ Form's "Publish?" checkbox is checked by default    │                                     │
+  │ without thinking about the publish         │ (because default=True). akash submits as-is.        │ Saved as True. Live immediately.    │
+  │ checkbox                                   │                                                     │                                     │
+  ├────────────────────────────────────────────┼─────────────────────────────────────────────────────┼─────────────────────────────────────┤
+  │ Writes a draft, unchecks the "Publish?"    │ Same form, but the checkbox is unticked when he     │ Saved as False. Lives in his drafts │
+  │ checkbox before saving                     │ hits Save.                                          │  list, hidden from readers.         │
+  ├────────────────────────────────────────────┼─────────────────────────────────────────────────────┼─────────────────────────────────────┤
+  │ Comes back to a draft (row 3) and ticks    │ Edit form pre-fills with published=False. He ticks  │ Updates to True. Now visible on the │
+  │ "Publish?"                                 │ it and saves.                                       │  homepage.                          │
+  └────────────────────────────────────────────┴─────────────────────────────────────────────────────┴─────────────────────────────────────┘
+
+  It can also flip back from True → False (un-publishing) if akash decides a live post is wrong and wants to take it down without deleting it.
+  Same form, untick the box, save.
+
+  ---
+  Why default=True in the model itself
+
+  Look at the form scenarios above. The most common path is: write a post, hit Save, want it live. So the model defaults to True so that:
+
+  - Forms inherit the default (<input type="checkbox" checked>)
+  - API requests that omit the field get the sensible default
+  - Programmatic creation (Post(title=..., body=...).save()) doesn't need to specify published
+
+  If you defaulted to False, every new post would silently land as a draft and akash would wonder why his posts aren't showing up. The default
+  points at the path of least surprise.
+
+  ---
+  Visual recap
+
+  published = True   →  homepage shows it     →  views can climb
+  published = False  →  homepage hides it     →  views stuck at 0 (no reader can find it)
+
+  The flip happens at form-submit time. The published column is just a boolean switch on each row. The homepage query treats it as the
+  visibility filter.
+  ------------------------------------------------
+   Excellent observation — you've spotted one of the most important patterns in database design. Tables behave very differently depending on    
+  what they represent. There are roughly four patterns, and recognizing which one a table belongs to shapes how you design it.                 
+                                                                                                                                               
+  ---                                         
+  The four patterns                       
+                                                                                                                                               
+  1. Append-only (event / log tables)                                                                                                          
+                                                                                                                                               
+  Behavior: Rows are added constantly. Existing rows are rarely modified. Deletion is almost never done.                                       
+                                                            
+  Why: Each row represents something that happened — a fact in time. You don't change a fact after it occurred.
+
+  Examples:
+  - Bank transactions — once recorded, never edited. New deposits/withdrawals add rows.
+  - Order history — each order is a frozen historical record.
+  - Tweets / posts / comments — new ones added all the time.
+  - Audit logs — who did what, when. Sacred. Never modified.
+  - Analytics events — page views, button clicks.
+
+  In your blog: posts_post is mostly this pattern. Posts get added. They might be edited (the content can change), but the row itself stays.
+  Deletion happens but is the exception.
+
+  ---
+  2. Mutable record (state-holding tables)
+
+  Behavior: A relatively fixed set of rows whose values keep changing over time. The row stays put; the data inside it mutates.
+
+  Why: Each row represents a thing that exists with state — and state evolves.
+
+  Examples:
+  - User accounts — one row per user. Their email, password, last_login keep changing. The row itself stays for years.
+  - Product inventory — one row per product. The stock count goes up and down constantly.
+  - Bank accounts — one row per account. The balance changes with every transaction.
+  - Order status — one row per order. Status field flips: pending → shipped → delivered.
+
+  In your blog: auth_user is this pattern. Users add slowly, but each user's email/last_login/etc. mutates over time.
+
+  The views field on your post is the same idea at the column level — the row stays, but views keeps incrementing.
+
+  ---
+  3. Reference / lookup (slow-changing reference data)
+
+  Behavior: A small, almost-static set of rows. Rarely added to. Almost never deleted.
+
+  Why: These are categories, codes, or types the rest of the system points at.
+
+  Examples:
+  - Country list — ~200 rows. Hasn't changed meaningfully in decades.
+  - Currency codes — USD, EUR, INR. Stable.
+  - User roles — admin, editor, viewer. Add rarely.
+  - Tax brackets, shipping zones, categories.
+
+  In your blog: posts_category is this pattern. A small list of topics — Django, PostgreSQL, DevOps. Maybe 5-20 rows total. New ones added a
+  few times a year. Rarely deleted (and when deleted, that's why we set up SET NULL on the FK!).
+
+  ---
+  4. Junction / association (many-to-many relationship tables)
+
+  Behavior: Rows added and removed as relationships form and break.
+
+  Why: Each row links two other tables together — the row exists only as long as the relationship does.
+
+  Examples:
+  - user_groups — links a User to a Group. Add a row to add someone to a group, delete it to remove them.
+  - post_tags — links a Post to a Tag (when you add tags later).
+  - follows (Twitter/Instagram) — links follower → followed. Heavy churn — added/removed constantly.
+
+  In your blog: none of these exist yet because you don't have many-to-many relationships. If you added Tags later, you'd get a posts_post_tags
+   junction table — that's pattern #4.
+
+  ---
+  Map of your project's tables
+
+  ┌───────────────────┬──────────────────────┬──────────────────────────────────────────────────┐
+  │       Table       │       Pattern        │                     Behavior                     │
+  ├───────────────────┼──────────────────────┼──────────────────────────────────────────────────┤
+  │ posts_post        │ Append-only (mostly) │ Posts added, occasionally edited, rarely deleted │
+  ├───────────────────┼──────────────────────┼──────────────────────────────────────────────────┤
+  │ posts_category    │ Reference / lookup   │ Small fixed set, rarely changes                  │
+  ├───────────────────┼──────────────────────┼──────────────────────────────────────────────────┤
+  │ auth_user         │ Mutable record       │ Users grow slowly, profile data mutates          │
+  ├───────────────────┼──────────────────────┼──────────────────────────────────────────────────┤
+  │ django_session    │ Append-only with TTL │ Sessions added on login, cleared when expired    │
+  ├───────────────────┼──────────────────────┼──────────────────────────────────────────────────┤
+  │ django_admin_log  │ Append-only          │ Audit trail of admin actions, never edited       │
+  ├───────────────────┼──────────────────────┼──────────────────────────────────────────────────┤
+  │ django_migrations │ Append-only          │ One row per migration applied, never deleted     │
+  └───────────────────┴──────────────────────┴──────────────────────────────────────────────────┘
+
+  Notice every Django default table also fits one of these four patterns. Once you have the patterns in your head, every table becomes obvious.
+
+  ---
+  Two important distinctions you hinted at
+
+  You said "one row or column can happen to be deleted if decide by the management." That actually merges two very different things:
+
+  Data changes vs schema changes
+
+  ┌───────────────────────────────────────────────────────┬─────────────────────┬──────────────────────────────────┬──────────────────────┐
+  │                                                       │     What it is      │            How often             │       Tooling        │
+  ├───────────────────────────────────────────────────────┼─────────────────────┼──────────────────────────────────┼──────────────────────┤
+  │ Data change (adding/removing rows, updating values)   │ Modifying the       │ Constantly, all day              │ Normal app code,     │
+  │                                                       │ contents            │                                  │ queries              │
+  ├───────────────────────────────────────────────────────┼─────────────────────┼──────────────────────────────────┼──────────────────────┤
+  │ Schema change (adding/removing columns, renaming,     │ Modifying the       │ Rare — once per feature release  │ Migrations           │
+  │ changing types)                                       │ structure           │ at most                          │                      │
+  └───────────────────────────────────────────────────────┴─────────────────────┴──────────────────────────────────┴──────────────────────┘
+
+  If management decides "we no longer need the phone_number column on users" — that's a schema change and requires a migration (the
+  makemigrations + migrate workflow you'll be using). It's a careful operation because dropping a column means losing all data in it
+  permanently.
+
+  If management decides "delete this user's account" — that's a data change. Just deleting one row. Done in code or admin without migrations.
+
+  Hard delete vs soft delete (you'll meet this soon)
+
+  Bonus distinction worth knowing:
+
+  - Hard delete — DELETE FROM users WHERE id=5 — the row is gone, no recovery.
+  - Soft delete — keep the row, but flip a is_deleted=True or deleted_at=<timestamp> column. The row stays in the DB; queries filter it out.
+  Lets you "undelete" or audit later.
+
+  Most production apps use soft delete for important things (users, orders, posts) — partly for safety, partly for legal/audit reasons. For
+  your blog learning project, hard delete is fine, but it's worth knowing the distinction exists.
+
+  ---
+  The takeaway
+  - Soft delete — keep the row, but flip a is_deleted=True or deleted_at=<timestamp> column. The row stays in the DB; queries filter it out.
+  Lets you "undelete" or audit later.
+
+  Most production apps use soft delete for important things (users, orders, posts) — partly for safety, partly for legal/audit reasons. For
+  your blog learning project, hard delete is fine, but it's worth knowing the distinction exists.
+
+  ---
+  The takeaway
+
+  When you design a new table, ask yourself: what kind of thing am I storing?
+
+  - An event? → Append-only.
+  - A thing with state? → Mutable record.
+  - A category/code? → Reference.
+  - A relationship? → Junction.
+
+  Each pattern leads to different design choices: indexes, deletion rules, archival strategies, partitioning. But in every database — banking,
+  social media, e-commerce, blogs — the same four patterns repeat.
+
+  ---
