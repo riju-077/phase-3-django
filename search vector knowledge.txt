@@ -374,3 +374,18 @@
   That's the problem search_vector solves: make sure the right content is findable, and findable fast.
 
   ---
+ The GIN index for search_vector
+
+  Last beat we said the search_vector column makes search possible, but the GIN index is what makes it fast. Quick framing:
+
+  - Regular database indexes (the kind you've already met — slugs are auto-indexed) are B-tree indexes. They're optimized for one value per row
+   — perfect for ids, slugs, emails.
+  - A tsvector is different — it has many words inside one column value. A B-tree can't index that efficiently.
+  - GIN = Generalized INverted Index. It's PostgreSQL's index type built for "many values per row" — exactly the shape of a tsvector.
+
+  Without the GIN index: the search_vector column exists, but every search has to read every row to find matches. Slow.
+
+  With the GIN index: searches jump straight to matching rows via the index. Milliseconds even at millions of rows. The GIN index is what
+  unlocks the speed payoff we talked about in the Quora story.
+
+  Rule of thumb: anywhere you have a SearchVectorField, you put a GinIndex on it. They go together.
