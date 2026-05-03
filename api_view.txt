@@ -1,0 +1,228 @@
+  The class:
+  class PostListAPIView(APIView):
+
+  APIView is DRF's equivalent of Django's basic View class. You inherit from it and override methods named after HTTP verbs to handle different
+   request types:
+
+  ┌─────────────┬────────────────────────────────┐
+  │ HTTP method │      Method you override       │
+  ├─────────────┼────────────────────────────────┤
+  │ GET         │ def get(self, request):        │
+  ├─────────────┼────────────────────────────────┤
+  │ POST        │ def post(self, request):       │
+  ├─────────────┼────────────────────────────────┤
+  │ PUT         │ def put(self, request, pk):    │
+  ├─────────────┼────────────────────────────────┤
+  │ DELETE      │ def delete(self, request, pk): │
+  └─────────────┴────────────────────────────────┘
+
+  For now we only handle GET (read-only list). POST/PUT/DELETE come later.
+
+  Inside the get method:
+  posts = Post.objects.filter(published=True)
+  Standard Django ORM query — fetch all Posts where published=True. Returns a QuerySet (a Python iterable of Post instances).
+
+  serializer = PostSerializer(posts, many=True)
+  Wrap the queryset in a serializer. many=True is critical here — it tells DRF "I'm giving you a list of objects, not a single one." If you
+  forgot it, DRF would try to serialize the whole queryset as if it were one Post and crash with a confusing error. (This is one of the most
+  common DRF beginner mistakes — flagged in CLAUDE.md.)
+
+  return Response(serializer.data)
+  - serializer.data is the list of Python dicts (one per post)
+  - Response(...) is DRF's response wrapper — equivalent to render(...) but for APIs. It auto-detects the request format (JSON for normal
+  clients, HTML for the browsable API page) and returns the right thing.
+
+  ---
+  What this view does, end to end
+
+  Browser/Postman/iPhone           Your view                     PostgreSQL
+         │                            │                              │
+         │── GET /api/posts/ ────────►│                              │
+         │                            │                              │
+         │                            │── Post.objects.filter(...) ──►│
+         │                            │◄─── queryset of posts ───────│
+         │                            │                              │
+         │                            │── serializer(posts, many=T)  │
+         │                            │   serializer.data is built   │
+         │                            │                              │
+         │                            │── Response(serializer.data)  │
+         │◄─── JSON list of posts ────│                              │
+         │                            │                              │
+
+  You're not yet at "JSON list of posts" — there's no URL pointing at this view yet, so hitting /api/posts/ would 404. URL wiring is the next
+  beat.
+
+  ---
+  What's missing — and why I'm splitting beats
+
+  For this view to actually be reachable, three more things need to happen:
+
+  1. Create posts/api_urls.py — local URL patterns for the API
+  2. Wire it into blog/urls.py — the project's main URL file
+  3. Run the dev server — python manage.py runserver
+
+  Then we hit http://localhost:8000/api/posts/ in a browser and see the browsable API page render. That's the wow.
+
+  I'm splitting the URL wiring into the next beat so this beat stays focused on the view concept. It's a different file and a different
+  responsibility.
+  Create posts/api_views.py, type the class, save, and tell me when done. Next beat is the wow.
+  What's missing — and why I'm splitting beats
+
+  For this view to actually be reachable, three more things need to happen:
+
+  1. Create posts/api_urls.py — local URL patterns for the API
+  2. Wire it into blog/urls.py — the project's main URL file
+  3. Run the dev server — python manage.py runserver
+
+  Then we hit http://localhost:8000/api/posts/ in a browser and see the browsable API page render. That's the wow.
+
+  I'm splitting the URL wiring into the next beat so this beat stays focused on the view concept. It's a different file and a different
+  responsibility.
+
+--------------------------------------
+
+ ---                                                                                                                                          
+  many=True — what it actually does                                                                                                            
+                                                                                                                                               
+  Picture you're back to your Quora page. Two different scenarios:                                                                             
+                                                                                                                                               
+  Scenario A — sending ONE article as JSON                                                                                                     
+                                                                                                                                               
+  Reader hits /api/articles/5/ to see article 5.                                                                                               
+                                                            
+  Your view fetches one Post object from the DB:
+  post = Post.objects.get(id=5)   # ← ONE post
+
+  You wrap it in the serializer:
+  serializer = PostSerializer(post)
+  serializer.data
+  # → {"id": 5, "title": "How to Cook Biryani", "body": "..."}
+
+  That's one dict, ready to ship as JSON.
+
+  Scenario B — sending a LIST of articles as JSON
+
+  Reader hits /api/articles/ to see all your articles.
+
+  Your view fetches many Post objects:
+  posts = Post.objects.filter(published=True)   # ← TEN posts
+
+  If you naively wrapped them like before:
+  serializer = PostSerializer(posts)   # ← FORGET many=True
+
+  DRF would think you're handing it ONE post (it doesn't know posts is actually 10 posts in disguise), try to access posts.title and
+  posts.body, fail, and crash with a confusing error. Because it's expecting one thing, not a list.
+
+  So you have to tell it explicitly:
+  serializer = PostSerializer(posts, many=True)   # "Hey, this is multiple"
+  serializer.data
+  # → [
+  #     {"id": 1, "title": "Biryani"},
+  #     {"id": 2, "title": "Marathon"},
+  #     {"id": 3, "title": "Quit job"},
+  #     ...all 10 articles...
+  #   ]
+
+  Now you get a list of dicts — the JSON array your reader's browser expects.
+
+  The thumb rule
+
+  ▎ One object → don't pass many=True.
+  ▎ Many objects (a queryset, a list) → always pass many=True.
+
+  It's a switch on the same serializer class. Same class handles both cases — you just flip the switch based on whether you're handing it one
+  thing or many things.
+
+  ---
+  APIView — the story
+
+  Now the story for the view class itself.
+
+  The setup — your Quora "My Articles" page
+
+  You're logged into Quora at /articles/. From this one page, you can do four different things, each by clicking a different button:
+
+  ┌────────────────────────────────────────┬───────────────────────────────────┬────────────────────────────────────┐
+  │              What you do               │ What HTTP verb your browser sends │            What happens            │
+  ├────────────────────────────────────────┼───────────────────────────────────┼────────────────────────────────────┤
+  │ Visit the page to see your list        │ GET /articles/                    │ Quora returns the list of articles │
+  ├────────────────────────────────────────┼───────────────────────────────────┼────────────────────────────────────┤
+  │ Click "Publish new article" and submit │ POST /articles/                   │ Quora creates a new article        │
+  ├────────────────────────────────────────┼───────────────────────────────────┼────────────────────────────────────┤
+  │ Edit an existing article and save      │ PUT /articles/5/                  │ Quora updates article 5            │
+  ├────────────────────────────────────────┼───────────────────────────────────┼────────────────────────────────────┤
+  │ Click "Delete" on an article           │ DELETE /articles/5/               │ Quora removes article 5            │
+  └────────────────────────────────────────┴───────────────────────────────────┴────────────────────────────────────┘
+
+  Same URL, different actions. The URL is the address (which thing you're talking about). The HTTP verb is the action (what you want to do with
+   that thing). Browsers and APIs use these two together.
+
+  What APIView does
+
+  APIView is a class that says: "I'll handle this URL. The action depends on which HTTP verb the request used. Tell me what to do for each
+  verb."
+
+  You define methods named after each verb:
+
+  class PostListAPIView(APIView):
+      def get(self, request):
+          # runs when a GET request comes in
+          ...
+
+      def post(self, request):
+          # runs when a POST request comes in
+          ...
+
+      def put(self, request, pk):
+          # runs when a PUT request comes in
+          ...
+
+      def delete(self, request, pk):
+          # runs when a DELETE request comes in
+          ...
+
+  DRF's job: when a request arrives, look at its HTTP verb, find the matching method, run it. You don't have to write any if/else logic. DRF
+  dispatches to the right method automatically based on the verb.
+
+  The story applied to your view
+
+  Your view right now only has get:
+
+  class PostListAPIView(APIView):
+      def get(self, request):
+          posts = Post.objects.filter(published=True)
+          serializer = PostSerializer(posts, many=True)
+          return Response(serializer.data)
+
+  Read it like a story:
+
+  ▎ "When someone hits this URL with a GET (just visiting / reading), do this:
+  ▎ 1. Fetch all published posts from the DB.
+  ▎ 2. Convert them into JSON-shaped dicts via the serializer (many=True because it's a list).
+  ▎ 3. Return the dicts wrapped in a Response — DRF turns them into actual JSON for the wire."
+
+  That's the entire story. One verb (GET), one action (return the list). We'll add post, put, delete later — same class, more methods.
+
+  Response() in plain words
+
+  Response(...) is just "send this data back to whoever asked, formatted as JSON." It wraps your Python dict into a proper HTTP response with
+  the right Content-Type: application/json header so the browser knows what it's receiving.
+
+  You can almost think of it as return for an API — but return alone returns Python objects which the network can't carry. Response(...) is the
+   wrapper that makes Python data shippable.
+
+  ---
+  The whole flow as a story
+
+  Reader on Quora-equivalent visits /api/posts/:
+
+  1. Browser sends: GET /api/posts/
+  2. Django's URL system spots the URL, routes to PostListAPIView
+  3. DRF sees the verb is GET, runs your get() method
+  4. Your code fetches posts from PostgreSQL, runs the serializer with many=True, returns Response(serializer.data)
+  5. DRF wraps that in a real HTTP response with JSON
+  6. Browser receives JSON, shows it (or your iPhone app parses it, etc.)
+
+  That whole thing happens in milliseconds, every time anyone hits the URL.
+
+  ---
