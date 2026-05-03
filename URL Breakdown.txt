@@ -1,0 +1,102 @@
+ Now to the URL breakdown — explaining what happens when you typed that URL
+
+  Let's walk through what Django actually does when the request http://127.0.0.1:8000/api/posts/ arrives. It's a chain of routers — each layer
+  peels off a piece of the URL and hands the rest down.
+
+  Step 1 — your browser parses the URL into parts
+
+  http://127.0.0.1:8000/api/posts/
+  └─────────────────┘ └─────────┘
+     server address   path on that server
+
+  ┌─────────────┬────────────────────────────────────────────────────────────────┐
+  │    Part     │                         What it means                          │
+  ├─────────────┼────────────────────────────────────────────────────────────────┤
+  │ http://     │ The protocol (HTTP request)                                    │
+  ├─────────────┼────────────────────────────────────────────────────────────────┤
+  │ 127.0.0.1   │ The IP address of the server (your own machine — "localhost")  │
+  ├─────────────┼────────────────────────────────────────────────────────────────┤
+  │ :8000       │ The port number Django is listening on                         │
+  ├─────────────┼────────────────────────────────────────────────────────────────┤
+  │ /api/posts/ │ The path — what the browser sends to the server in the request │
+  └─────────────┴────────────────────────────────────────────────────────────────┘
+
+  The browser opens a TCP connection to 127.0.0.1:8000 and sends:
+
+  GET /api/posts/ HTTP/1.1
+  Host: 127.0.0.1:8000
+  Accept: text/html, ...
+
+  That's it. Django (running the dev server) receives this on port 8000.
+
+  ---
+  Step 2 — Django looks at blog/urls.py first
+
+  This is your top-level URL router. Right now it has:
+
+  urlpatterns = [
+      path('admin/', admin.site.urls),
+      path('api/', include('posts.api_urls')),
+  ]
+
+  Django walks the list, trying to match the start of the path /api/posts/:
+
+  - Does /api/posts/ start with admin/? → No, skip.
+  - Does /api/posts/ start with api/? → Yes. Match.
+
+  The include('posts.api_urls') says: "Strip off the matched prefix (api/) and hand whatever's left (posts/) to posts/api_urls.py to figure
+  out."
+
+  So at this point, Django has consumed api/ and is now asking the sub-router to deal with posts/.
+
+  ---
+  Step 3 — Django looks at posts/api_urls.py next
+
+  This is your sub-router for the API:
+
+  urlpatterns = [
+      path('posts/', api_views.PostListAPIView.as_view(), name='api-post-list'),
+  ]
+
+  Django walks this list, trying to match what's left of the path (posts/):
+
+  - Does posts/ match posts/? → Yes. Match.
+
+  The match points at PostListAPIView.as_view() — so Django runs the view.
+
+  ---
+  Step 4 — the view runs
+
+  PostListAPIView.get() executes:
+  1. Queries the DB for published posts
+  2. Wraps them in PostSerializer(..., many=True)
+  3. Returns Response(serializer.data)
+
+  DRF wraps that into a real HTTP response. Browser receives it and (because you visited via a browser) renders the HTML browsable API page.
+
+  ---
+  Mental model — nested routers
+
+  Think of URL routing as a tree of routers, each handling one prefix:
+
+  blog/urls.py  (top-level router, matches the start of every URL)
+  ├── admin/    → handed to Django's admin URLs
+  └── api/      → handed to posts/api_urls.py
+                  ├── posts/   → handed to PostListAPIView
+                  └── (future) categories/, stats/, etc.
+
+  Why split URLs across multiple files instead of putting them all in blog/urls.py?
+
+  Modularity. Each app owns its own URLs. The posts/ app's URLs live in posts/api_urls.py. If you add a comments app later, it gets its own
+  comments/api_urls.py. The top-level blog/urls.py just include()s each one under its prefix.
+
+  This is the same reason your models.py lives in posts/ instead of in blog/. Each app is a self-contained unit, owning its own data, views,
+  serializers, and URLs.
+
+  ---
+  In one sentence
+
+  ▎ The URL http://127.0.0.1:8000/api/posts/ reaches your browser at 127.0.0.1:8000 (the server), then Django chops the path piece by piece —
+  ▎ api/ matches in blog/urls.py and passes the rest down to posts/api_urls.py, where posts/ matches and runs PostListAPIView.
+
+  Each layer is responsible for one slice of the path. Stack them as deep as you want.
