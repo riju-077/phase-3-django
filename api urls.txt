@@ -1,0 +1,100 @@
+Two small file changes, then we run the server.                                                                                              
+                                                                                                                                               
+  ---                                                                                                                                          
+  File 1 — create posts/api_urls.py                                                                                                            
+   
+  This is a new file. Same folder as models.py, serializers.py, api_views.py.                                                                  
+                                                            
+  Type:
+
+  from django.urls import path
+  from . import api_views
+
+  urlpatterns = [
+      path('posts/', api_views.PostListAPIView.as_view(), name='api-post-list'),
+  ]
+
+  Read it as: "Whenever a request hits posts/ under whatever prefix this file is mounted at, send it to PostListAPIView."
+
+  The .as_view() is a small DRF/Django thing — class-based views need to be converted to a function before URL patterns can use them.
+  .as_view() does that. Just remember: anytime you point a URL at a class-based view, append .as_view().
+
+  name='api-post-list' is a label for reverse-lookups in templates and code — not strictly needed yet, good habit.
+
+  ---
+  File 2 — update blog/urls.py
+
+  This file already exists. Open it. You'll see something like:
+
+  from django.contrib import admin
+  from django.urls import path
+
+  urlpatterns = [
+      path('admin/', admin.site.urls),
+  ]
+
+  You need to add two things:
+
+  1. Import include at the top — change the urls import:
+  from django.urls import path, include
+
+  2. Add a new URL pattern that mounts your api_urls.py under /api/:
+  path('api/', include('posts.api_urls')),
+
+  So your blog/urls.py ends up looking like:
+
+  from django.contrib import admin
+  from django.urls import path, include
+
+  urlpatterns = [
+      path('admin/', admin.site.urls),
+      path('api/', include('posts.api_urls')),
+  ]
+
+  What this does: "Anything starting with /api/ — hand off to the URL patterns inside posts/api_urls.py."
+
+  So your posts/ URL becomes:
+
+  /api/posts/
+   │   └── posts/        from posts/api_urls.py
+   └── api/              from blog/urls.py
+
+  path('api/', include(...)) is the prefix. path('posts/', ...) inside api_urls.py is what comes after. Concatenated → /api/posts/.
+
+  ---
+  Run the dev server
+
+  In your terminal at the project root:
+
+  uv run python manage.py runserver
+
+  You should see:
+
+  Watching for file changes with StatReloader
+  Starting development server at http://127.0.0.1:8000/
+  Quit the server with CTRL-BREAK.
+
+  Make sure Postgres is running first (admin PowerShell: net start postgresql-x64-18). If Postgres isn't up, the server will start but any DB
+  query will fail.
+
+  ---
+  The wow moment
+
+  In your browser, go to:
+
+  http://localhost:8000/api/posts/
+
+  You should see a DRF browsable API page — a styled HTML page rendered by DRF itself, showing:
+
+  - A heading: "Post List"
+  - A JSON response below it (likely [] since you have no posts yet)
+  - Headers, Content-Type, navigation
+  - (If logged in) a form to make requests
+
+  This page is auto-generated. You wrote zero HTML. DRF reads your view + serializer and builds this page on the fly. That's why DRF is loved —
+   it gives developers a live, clickable interface to your API for free.
+
+  If you visit the same URL with a tool like Postman, or run curl http://localhost:8000/api/posts/, you'll get pure JSON instead. Same
+  endpoint, different format, decided by the request's Accept header. DRF handles both.
+
+  ---
