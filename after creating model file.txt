@@ -1,0 +1,57 @@
+Yes — models.py is officially done. Now we make the database actually create those tables.                                                   
+                                                                                                                                               
+  ---                                                                                                                                          
+  Pre-flight: Postgres has to be running                                                                                                       
+                                                                                                                                               
+  Postgres is on manual startup in your setup. Open an admin PowerShell and run:                                                               
+                                                                                                                                               
+  net start postgresql-x64-18                                                                                                                  
+                                                                                                                                               
+  If it says "already running" or "service already started" — fine, move on.
+
+  ---
+  Two commands, in order
+
+  In your normal terminal at the project root (D:\DATA_S\django\blog), with your venv ready (or use uv run prefix):
+
+  Step 1 — generate the migration
+
+  uv run python manage.py makemigrations
+
+  What this does: Django reads your models.py, compares it to the database's current state (which has only the 10 default tables), and
+  generates a migration file in posts/migrations/0001_initial.py. The file is Python code describing the table-creation steps.
+
+  This step does not touch the database yet. It just generates the file.
+
+  You should see output like:
+  Migrations for 'posts':
+    posts/migrations/0001_initial.py
+      + Create model Category
+      + Create model Post
+      + Create index ... on field(s) search_vector of model post
+
+  Step 2 — apply the migration
+
+  uv run python manage.py migrate
+
+  What this does: takes that migration file and runs it against PostgreSQL. Translates the Python migration steps into actual SQL CREATE TABLE
+  and CREATE INDEX statements. Your database now has new posts_post and posts_category tables.
+
+  You should see something like:
+  Operations to perform:
+    Apply all migrations: admin, auth, contenttypes, posts, sessions
+  Running migrations:
+    Applying posts.0001_initial... OK
+
+  ---
+  Verify it worked — go look in pgAdmin
+
+  1. Open pgAdmin
+  2. Navigate: Servers → blog → Databases → blog_db → Schemas → public → Tables
+  3. You should now see two new tables: posts_post and posts_category sitting alongside the 10 default Django tables (12 total now)
+  4. Right-click posts_post → View/Edit Data → All Rows. The table is empty (no posts yet) but you'll see all the columns — id, title, body,
+  author_id, category_id, created_at, updated_at, published, views, search_vector — exactly what you defined.
+
+  That confirms the round trip: models.py → migration file → SQL → real PostgreSQL tables.
+
+  ---
