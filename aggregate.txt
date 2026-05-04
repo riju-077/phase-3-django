@@ -1,0 +1,146 @@
+Concept #5 — aggregate (and annotate next)                                                                                                   
+                                                                                                                                               
+  These two ORM tools are some of Django's most under-used superpowers. They let you push computation into the database instead of looping in  
+  Python.                                                                                                                                      
+                                                                                                                                               
+  We'll tackle the simpler one first today: aggregate. Then annotate is its own beat.                                                          
+                                                                                                                                               
+  ---                                                                                                                                          
+  The problem aggregate solves                                                                                                                 
+                                                            
+  Imagine you want a /api/stats/ endpoint that tells someone how big this blog is right now: total posts, total views across all posts, average
+   views per post.
+
+  Naive Python approach:
+
+  posts = Post.objects.filter(published=True)
+  total_views = 0
+  for post in posts:
+      total_views += post.views
+  avg_views = total_views / len(posts)
+
+  What's wrong:
+  - Loads every post into Python memory to count and sum
+  - With 1 million posts → 1 million Python objects in RAM, takes seconds, melts the server
+
+  The right approach: ask the database to do the math, and only ship back the answer (a few numbers).
+
+  SELECT COUNT(*), SUM(views), AVG(views) FROM posts_post WHERE published = true;
+
+  That's one fast query. Returns three numbers. Done.
+
+  aggregate is the Django ORM way to write that exact query.
+
+  ---
+  How aggregate works
+
+  It returns ONE Python dict with summary values for the whole queryset.
+
+  from django.db.models import Count, Sum, Avg, Max, Min
+
+  Post.objects.filter(published=True).aggregate(
+      total_posts=Count('id'),
+      total_views=Sum('views'),
+      avg_views=Avg('views'),
+  )
+  # → {'total_posts': 5, 'total_views': 47, 'avg_views': 9.4}
+
+  Things to notice:
+
+  ┌──────────────────────────────────────────────┬───────────────────────────────────────────────────────────────────────────────────┐
+  │                    Detail                    │                                   What it means                                   │
+  ├──────────────────────────────────────────────┼───────────────────────────────────────────────────────────────────────────────────┤
+  │ Returns a dict, NOT a queryset               │ You can't chain .filter() after it. It's the end of the chain.                    │
+  ├──────────────────────────────────────────────┼───────────────────────────────────────────────────────────────────────────────────┤
+  │ You name the keys (total_posts=, avg_views=) │ Picks what the dict's keys will be                                                │
+  ├──────────────────────────────────────────────┼───────────────────────────────────────────────────────────────────────────────────┤
+  │ Count, Sum, Avg, Max, Min                    │ All live in django.db.models. Each one becomes a SQL aggregate function.          │
+  ├──────────────────────────────────────────────┼───────────────────────────────────────────────────────────────────────────────────┤
+  │ Filters apply first                          │ filter(published=True) runs first, then the aggregation only sees published posts │
+  └──────────────────────────────────────────────┴───────────────────────────────────────────────────────────────────────────────────┘
+
+  ---
+  What we'll build — /api/stats/
+
+  A read-only endpoint that returns one JSON object summarizing the whole blog. No list, just numbers.
+
+  {
+    "total_posts": 5,
+    "total_views": 47,
+    "avg_views": 9.4
+  }
+
+  ---
+  Step 1 — add the view in posts/api_views.py
+
+  At the top of api_views.py, add a new import line for the aggregate functions:
+
+  from django.db.models import Count, Sum, Avg
+
+  Then below your existing classes, add:
+
+  class StatsAPIView(APIView):
+      def get(self, request):
+          stats = Post.objects.filter(published=True).aggregate(
+              total_posts=Count('id'),
+              total_views=Sum('views'),
+              avg_views=Avg('views'),
+          )
+          return Response(stats)
+
+  That's the entire view. Read it as: "When a GET hits this URL, ask the DB for these three summary numbers, and return them as JSON."
+
+  A few notes:
+  - No serializer needed here. aggregate() already returns a Python dict — perfect JSON shape.
+  - Count('id') counts rows. Sum('views') sums the views column. Avg('views') averages it. Same SQL functions, named more readable.
+  - We filter to published=True so drafts don't pollute the stats.
+
+  ---
+  Step 2 — add a URL pattern in posts/api_urls.py
+
+  Add one more line to your urlpatterns:
+
+  path('stats/', api_views.StatsAPIView.as_view(), name='api-stats'),
+
+  Your full file now should be:
+
+  from django.urls import path
+  from . import api_views
+
+  urlpatterns = [
+      path('posts/', api_views.PostListAPIView.as_view(), name='api-post-list'),
+      path('posts/<int:pk>/', api_views.PostDetailAPIView.as_view(), name='api-post-detail'),
+      path('stats/', api_views.StatsAPIView.as_view(), name='api-stats'),
+  ]
+
+  ---
+  Step 3 — test
+
+  Save both files. The dev server reloads. Visit:
+
+  http://127.0.0.1:8000/api/stats/
+
+  You should see something like:
+
+  {
+      "total_posts": 5,
+      "total_views": 47,
+      "avg_views": 9.4
+  }
+
+  Numbers will reflect your actual posts. If you only have 2 posts with 0 views each, you'll see {"total_posts": 2, "total_views": 0,
+  "avg_views": 0.0}.
+
+  ---
+  What just happened, technically
+
+  The single .aggregate(...) call became this SQL behind the scenes:
+
+  SELECT
+      COUNT(id) AS total_posts,
+      SUM(views) AS total_views,
+      AVG(views) AS avg_views
+  FROM posts_post
+  WHERE published = true;
+
+  One query. Three numbers. No Python loop. This same approach scales effortlessly — it'd work the same on 5 posts or 5 million.
