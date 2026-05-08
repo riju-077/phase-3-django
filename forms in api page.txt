@@ -1,0 +1,170 @@
+Two corrections from me first, then the fix.                                                                                                 
+                                                   
+  Correction 1 — how DRF excluded author/views                                                                                                 
+                                                                                                                                               
+  I was wrong earlier when I said "DRF detected they have defaults." The real reason they're missing from the form is what you did — you added 
+  read_only_fields = ['author', 'views'] to serializers.py. DRF reads that list and removes those fields from the form.                        
+                                                                                                                                               
+  auto_now / auto_now_add is the only thing DRF auto-detects (that's why created_at and updated_at were never in the form). For author and
+  views, your read_only_fields line is doing the work.
+
+  Correction 2 — there's no slug on Post
+
+  I just checked your models.py — your Post model doesn't have a slug field at all. Only Category does. So my "POST will fail because slug is
+  missing" warning yesterday was nonsense. Apologies for the false alarm.
+
+  What the actual error is saying
+
+  Read the error message in plain English:
+
+  ▎ null value in column "author_id" of relation "posts_post" violates not-null constraint
+
+  Translation: "PostgreSQL got asked to insert a row into posts_post with author_id = NULL, but the column is NOT NULL, so it refused."
+
+  Why is author_id NULL? Because:
+  - You marked author as read-only in the serializer → form doesn't ask for it, serializer ignores any incoming author value
+  - Your PostViewSet doesn't set it either
+  - So when DRF saves, the author field is empty → NULL hits the DB → boom
+
+  This is exactly the situation read_only_fields creates: the client can't supply it, so the server has to. Right now your server isn't
+  supplying it, so nobody is.
+
+  The fix — one method on PostViewSet
+
+  Open posts/api_views.py and add one method to PostViewSet:
+
+  class PostViewSet(viewsets.ModelViewSet):
+      queryset = Post.objects.filter(published=True)
+      serializer_class = PostSerializer
+
+      def perform_create(self, serializer):
+          serializer.save(author=self.request.user)
+
+  That's it — no slugify, no extra imports, just three lines.
+
+  What it does:
+  - DRF calls perform_create(self, serializer) right before the save happens on a POST
+  - serializer.save(author=self.request.user) injects author = the logged-in user (you) before the row is inserted
+  - All the other fields (title, body, category, etc.) are still pulled from the form as normal
+
+  So now every new post gets stamped with whoever is logged in as the author — exactly what you want. No way for one user to claim to be
+  another, because the client never gets a say.
+
+  ---
+  Save the file (the dev server should auto-reload), refresh /api/posts/, fill in the form again, hit POST, and tell me what happens.
+
+✻ Worked for 48s
+
+❯ sorry i didnt get a thing can help me undertstand the sam with the help of tables and allexaples and story                                   
+                                                                                                             
+● OK — full restart on this. Story first, then tables, then the fix. Take your time.                                                           
+                                                                                                                                               
+  The story (Quora, from a reader's POV)                                                                                                       
+                                                                                                                                               
+  Sarah opens Quora, writes an answer to "How does Django ORM work?", hits submit. The answer appears on the page, signed "Answered by Sarah". 
+  She moves on.                                                                                                                                
+                  
+  Now imagine the submit form on Quora had a big Author dropdown where Sarah could pick any user from a list:
+
+  Author: [ Albert Einstein  ▼ ]
+  Title:  [ How does Django ORM work? ]
+  Body:   [ ... ]
+                                       [ Submit ]
+
+  That would be a disaster. Sarah could publish nonsense signed as Albert Einstein, or her boss, or anyone. The reader visiting Quora would see
+   lies signed by the wrong person.
+
+  The rule every real site lives by: the form never asks "who's the author?" — the server already knows, because the server knows who's logged
+  in. Author = whoever sent the request. Period.
+
+  So a good site does two things together:
+
+  1. Hide the Author dropdown from the form. (Client can't pick.)
+  2. Server stamps the logged-in user as the author when saving. (Server fills it in.)
+
+  Both halves. Always together.
+
+  What you did vs what's missing
+
+  ┌────────────────────────────────────┬───────────────────────────┬─────────────────────────────────────────────────┬────────────────────┐
+  │                Half                │       What it does        │                 Where it lives                  │  Status in your    │
+  │                                    │                           │                                                 │      project       │
+  ├────────────────────────────────────┼───────────────────────────┼─────────────────────────────────────────────────┼────────────────────┤
+  │ 1. Hide the Author dropdown from   │ "Client cannot pick the   │ read_only_fields = ['author', 'views'] in       │ ✅ done            │
+  │ the form                           │ author"                   │ serializers.py                                  │                    │
+  ├────────────────────────────────────┼───────────────────────────┼─────────────────────────────────────────────────┼────────────────────┤
+  │ 2. Server fills in the logged-in   │ "Server stamps the        │ perform_create in PostViewSet (api_views.py)    │ ❌ missing         │
+  │ user                               │ author"                   │                                                 │                    │
+  └────────────────────────────────────┴───────────────────────────┴─────────────────────────────────────────────────┴────────────────────┘
+
+  You did half 1. You forgot half 2. That's the entire problem.
+
+  What actually happened when you hit POST (step by step)
+
+  ┌──────┬──────────────────────────────────────────────────────────────────────────────────────┐
+  │ Step │                                    What happened                                     │
+  ├──────┼──────────────────────────────────────────────────────────────────────────────────────┤
+  │ 1    │ Form had: Title, Body, Category, Published. (No Author — half 1 hid it.)             │
+  ├──────┼──────────────────────────────────────────────────────────────────────────────────────┤
+  │ 2    │ You typed a title + body, hit POST.                                                  │
+  ├──────┼──────────────────────────────────────────────────────────────────────────────────────┤
+  │ 3    │ Browser sent JSON {"title": "...", "body": "..."} to /api/posts/.                    │
+  ├──────┼──────────────────────────────────────────────────────────────────────────────────────┤
+  │ 4    │ DRF validated the JSON against PostSerializer. ✅ passes — title & body are present. │
+  ├──────┼──────────────────────────────────────────────────────────────────────────────────────┤
+  │ 5    │ DRF tried to INSERT a row: title="...", body="...", author=NULL.                     │
+  ├──────┼──────────────────────────────────────────────────────────────────────────────────────┤
+  │ 6    │ PostgreSQL: "Hold on — author_id is NOT NULL in this table." → rejects.              │
+  ├──────┼──────────────────────────────────────────────────────────────────────────────────────┤
+  │ 7    │ Django turned that DB rejection into the yellow IntegrityError page you saw.         │
+  └──────┴──────────────────────────────────────────────────────────────────────────────────────┘
+
+  The error message reads:
+
+  ▎ null value in column "author_id" of relation "posts_post" violates not-null constraint
+
+  Translation: "I tried to save a post with no author. The DB said no."
+
+  What perform_create does
+
+  perform_create is a hook DRF calls right before the row is saved on POST. You drop in there and say "by the way, also set author to the
+  logged-in user."
+
+  def perform_create(self, serializer):
+      serializer.save(author=self.request.user)
+
+  Same flow as before, but step 5 changes:
+
+  ┌──────┬─────────────────────────────────────────┬───────────────────────────────────────────────────────────────┐
+  │ Step │      Before adding perform_create       │                  After adding perform_create                  │
+  ├──────┼─────────────────────────────────────────┼───────────────────────────────────────────────────────────────┤
+  │ 5    │ INSERT title=..., body=..., author=NULL │ INSERT title=..., body=..., author=akash (the logged-in user) │
+  ├──────┼─────────────────────────────────────────┼───────────────────────────────────────────────────────────────┤
+  │ 6    │ DB rejects                              │ DB accepts                                                    │
+  ├──────┼─────────────────────────────────────────┼───────────────────────────────────────────────────────────────┤
+  │ 7    │ Yellow error page                       │ Green success page with the new post                          │
+  └──────┴─────────────────────────────────────────┴───────────────────────────────────────────────────────────────┘
+
+  self.request.user = the logged-in user object. DRF reads the session cookie that came with the request, looks up which user it belongs to,
+  and gives you that User object. Right now that's akash (you, since you logged in earlier).
+
+  A tiny example — same shape, different fields
+
+  Imagine a comments app. The Comment model has author (FK to User), text, created_at. The form should only ask for text. Author = current
+  user. Same exact pattern:
+
+  class CommentViewSet(viewsets.ModelViewSet):
+      queryset = Comment.objects.all()
+      serializer_class = CommentSerializer
+
+      def perform_create(self, serializer):
+          serializer.save(author=self.request.user)
+
+  Same three lines. Every CRUD API for user-owned content uses this pattern. You'll see it everywhere.
+
+  What you'll do
+
+  Open posts/api_views.py. Inside PostViewSet, after the serializer_class = PostSerializer line, add this one method:
+
+  def perform_create(self, serializer):
+      serializer.save(author=self.request.user)
