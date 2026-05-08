@@ -264,3 +264,22 @@ ok done yeh was just not able to write a new category because it only had my pre
   When you're learning, APIView is good — you see the wiring. When you're shipping CRUD, ModelViewSet is right — boilerplate-free.
 
   ---
+ Hit any one post's detail page in the browser:                                                                                               
+                                                                                                                                               
+  http://localhost:8000/api/posts/<id>/                                                                                                        
+                                                                                                                                               
+  Replace <id> with the id of a post you want to delete. For example, if you've got post id 6 (the new one you just created), visit:           
+                                                                                                                                               
+  http://localhost:8000/api/posts/6/
+                                                                                                                                               
+  You'll see:     
+  - That single post as JSON at the top
+  - A red DELETE button at the top right
+  - A PUT form at the bottom (for testing edit)
+
+  Click the red DELETE button → it'll ask "Are you sure you want to delete?" → confirm → post is gone. Status code 204 No Content.
+
+  Then go back to /api/posts/ and you'll see the list is one shorter.
+
+  ▎ Pick a throwaway post for this — once you DELETE it, it's gone from the database for real. (Hard delete, not soft delete. We could add
+  ▎ soft-delete later as a stretch.)
