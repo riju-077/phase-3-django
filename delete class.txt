@@ -1,0 +1,19 @@
+Yes — delete them. They're dead code now.                                                                                                    
+                                                                                                                                               
+  Why safe to delete:                                                                                                                          
+  - PostListAPIView and PostDetailAPIView aren't wired to any URL anymore. Last session you replaced the old path('posts/', ...) and
+  path('posts/<int:pk>/', ...) lines in api_urls.py with router.register('posts', api_views.PostViewSet, ...). The router owns those URLs now. 
+  - Nothing imports them. Grep PostListAPIView across the project — only hit will be the definition itself.
+
+  Rule: dead code is noise. Future-you (or any teammate) will read those classes and waste 5 minutes wondering which one is the "real" one.
+  Delete now while you remember the answer.
+
+  What to delete in posts/api_views.py:
+  - The entire class PostListAPIView(APIView): block
+  - The entire class PostDetailAPIView(APIView): block
+  - Any imports at the top that ONLY those two classes used (likely APIView from rest_framework.views, and possibly get_object_or_404, status).
+   If PostViewSet / StatsAPIView / CategoryListAPIView still need them, keep them — Python will tell you with an ImportError if you remove
+  something still in use.
+
+  Restart the server after — make sure /api/posts/, /api/posts/2/, /api/stats/, /api/categories/ all still load. If anything 500s, an import
+  got pulled too aggressively.
