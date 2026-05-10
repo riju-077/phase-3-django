@@ -1,0 +1,210 @@
+Terminal — restart the server:                                                                                                               
+                                                                                                                                             
+  python manage.py runserver                                                                                                                   
+   
+  (If it's already running, stop with Ctrl+C and start again. Permission classes load at import time, so the new file needs a fresh server.)   
+                  
+  Then test in the browser:
+  1. Normal window: log in as akash at /admin/, visit /api/posts/<id>/ — DELETE button + PUT form visible.
+  2. Incognito window: log in as aditya at /admin/ (if aditya isn't staff he can't reach admin — log in via /api-auth/login/ instead, or hit
+  the API while authed via Basic Auth in curl).
+  3. As aditya, visit /api/posts/<a-post-akash-wrote>/ — DELETE/PUT should be gone. Try forcing it via curl:
+  curl -u aditya:<password> -X DELETE http://localhost:8000/api/posts/<id>/
+  3. Should return 403 Forbidden.
+
+  ---
+  On your admin question — yes, completely.
+
+  The Django admin is a totally separate code path from your API. Quick map:
+
+  ┌─────────────────────────────┬──────────────────────────────────────────────────┬───────────────────────────────────────────────────────┐
+  │           Surface           │                    Code path                     │                   Permission system                   │
+  ├─────────────────────────────┼──────────────────────────────────────────────────┼───────────────────────────────────────────────────────┤
+  │ /admin/posts/post/3/delete/ │ Django's built-in admin views                    │ is_staff / is_superuser flags + Django's Permission   │
+  │                             │ (django.contrib.admin)                           │ model                                                 │
+  ├─────────────────────────────┼──────────────────────────────────────────────────┼───────────────────────────────────────────────────────┤
+  │ /api/posts/3/               │ Your PostViewSet                                 │ DRF permission_classes (what we just wired)           │
+  └─────────────────────────────┴──────────────────────────────────────────────────┴───────────────────────────────────────────────────────┘
+
+  IsAuthorOrReadOnly lives inside DRF's permission machinery. The admin doesn't import it, doesn't run it, doesn't know it exists. So:
+
+  - akash (superuser) can still delete any post via /admin/. Superusers bypass everything.
+  - aditya (regular user) can't reach /admin/ at all unless you set is_staff=True on him. Even then, he'd need explicit delete_post permission
+  granted in the admin's permissions UI.
+
+  This split is on purpose, and it's how production sites are built. The admin is for trusted operators (you, content moderators). The API is
+  for end users. They have completely separate rules because they serve completely different audiences.
+
+-------------------------------------------------------------------------------------------------------------------------------------------------------------
+
+
+ Quick clarification first — creating a user through the admin UI doesn't make them an admin. The admin UI is just the tool you used. By      
+  default, every new user created via /admin/ → Users → Add gets:                                                                              
+                                                                                                                                               
+  - is_staff = False (can't log into admin)
+  - is_superuser = False (no god-mode)                                                                                                         
+  - is_active = True (account works)
+
+  So aditya is almost certainly a regular user, not staff. Only akash is a real admin — because you created him with createsuperuser, which
+  sets both flags to True.
+
+  Three ways to check, easiest first:
+
+  1. The admin UI itself (30 seconds):
+  - Go to /admin/ → Users (under "Authentication and Authorization")
+  - The list shows columns Staff status and Superuser status — green check / red X for each user
+
+  2. Django shell (more precise):
+  python manage.py shell
+  Then:
+  from django.contrib.auth.models import User
+  for u in User.objects.all():
+      print(u.username, "staff:", u.is_staff, "super:", u.is_superuser)
+
+  3. Raw SQL via psql (if you want to see the truth at the DB level):
+  SELECT username, is_staff, is_superuser FROM auth_user;
+
+  ---
+  The three flags, briefly:
+
+  ┌──────────────┬─────────────────────────────────────────────────────────────────────────────────────────────────────────┐
+  │     Flag     │                                          What it lets them do                                           │
+  ├──────────────┼─────────────────────────────────────────────────────────────────────────────────────────────────────────┤
+  │ is_active    │ Account is enabled at all. Off = login refused everywhere.                                              │
+  ├──────────────┼─────────────────────────────────────────────────────────────────────────────────────────────────────────┤
+  │ is_staff     │ Can log into /admin/. Without this, the admin login form rejects them even with the right password.     │
+  ├──────────────┼─────────────────────────────────────────────────────────────────────────────────────────────────────────┤
+  │ is_superuser │ God mode. Bypasses every permission check, every has_object_permission, everything. The "root" account. │
+  └──────────────┴─────────────────────────────────────────────────────────────────────────────────────────────────────────┘
+
+  createsuperuser sets all three to True. The admin's "Add user" form sets only is_active.
+
+  Use option 1 — fastest. Tell me what you see.
+
+✻ Crunched for 18s
+
+※ recap: Phase 3 goal is the Blog + REST API; we just wired the `IsAuthorOrReadOnly` permission to close the security hole where any logged-in 
+  user could delete others' posts. Next: open `/admin/` → Users and confirm only `akash` has staff/superuser flags. (disable recaps in /config)
+                                                                                                                                               
+❯ only akash is superuser i see in the ui like if in any situation i wish to create more admin how to?                                         
+                                                                                                       
+● Two main ways, pick by situation.                                                                                                            
+                                                                                                                                               
+  1. From the admin UI (most common in real life):                                                                                             
+   
+  /admin/ → Users → click any user → scroll to the Permissions section → tick the boxes:                                                       
+                  
+  - Staff status ✅ — they can now log into /admin/
+  - Superuser status ✅ — god mode, all permissions
+
+  Save. Done. That user is now an admin from their next login onward.
+
+  2. From the terminal (when seeding a new project or you've locked yourself out):
+
+  python manage.py createsuperuser
+
+  Prompts for username, email, password. Creates a fresh user with all three flags (is_active, is_staff, is_superuser) set to True.
+
+  ---
+  Quick mental model — staff vs superuser:
+
+  ┌───────────────────────────────────────────────┬────────────────────────────────────────────────────────────────────────────────────────┐
+  │                     Goal                      │                                          Set                                           │
+  ├───────────────────────────────────────────────┼────────────────────────────────────────────────────────────────────────────────────────┤
+  │ Let someone help moderate posts via /admin/   │ is_staff=True only, then grant specific model permissions in the admin's Permissions   │
+  │ but NOT have unlimited power                  │ section (e.g. Can change post, Can delete category)                                    │
+  ├───────────────────────────────────────────────┼────────────────────────────────────────────────────────────────────────────────────────┤
+  │ Give someone full root-level control over     │ is_staff=True AND is_superuser=True                                                    │
+  │ everything                                    │                                                                                        │
+  ├───────────────────────────────────────────────┼────────────────────────────────────────────────────────────────────────────────────────┤
+  │ Give a regular user access to your API only — │ Both flags False. (Default.)                                                           │
+  │  never the admin                              │                                                                                        │
+  └───────────────────────────────────────────────┴────────────────────────────────────────────────────────────────────────────────────────┘
+
+  Most production sites have 1–2 superusers ever (founders/lead engineers), and a small number of is_staff=True users with limited per-model
+  permissions (content moderators, support staff). Superuser is rare on purpose — bypassing all checks is a footgun.
+
+
+  Rule of thumb: if a regular logged-in user can reach it through the website, lock it down with DRF permissions. If only staff can reach it
+  (admin URL), Django's built-in staff flags are the gate.
+
+Right now every post in the DB is authored by akash — so akash can do anything to anything, no rule trips. You need a post owned by someone  
+  else to actually test the block.                                                                                                             
+                                                                                                                                               
+  Cleanest test in 4 steps (no logging out, no incognito):                                                                                     
+                                                                                                                                               
+  1. In /admin/, reassign one post to aditya.                                                                                                  
+  - /admin/posts/post/ → click any post → change the Author dropdown from akash to aditya → Save.
+  - Note that post's ID (in the URL or list).
+
+  2. As akash, visit that post in the API.
+  - Open /api/posts/<that_id>/ in the same browser tab.
+  - The DELETE button and PUT form should be gone. The page only shows the GET response.
+  - ✅ That alone proves IsAuthorOrReadOnly is doing its job — akash isn't the author of this one, so write controls are stripped.
+
+  3. Force it via curl to see the actual 403.
+
+  PowerShell:
+  curl.exe -u akash:<password> -X DELETE http://localhost:8000/api/posts/<that_id>/
+  Expected:
+  HTTP/1.1 403 Forbidden
+  {"detail":"You do not have permission to perform this action."}
+
+  4. Confirm akash can still edit his OWN posts.
+  - Visit /api/posts/<a_post_akash_still_owns>/
+  - DELETE button + PUT form should be back. Try a PATCH inline if you want — it should succeed.
+
+  ---
+  What proves what:
+
+  ┌───────────────────────────────────────────┬─────────────────────────────────────────────────────────┐
+  │                  Result                   │                          Means                          │
+  ├───────────────────────────────────────────┼─────────────────────────────────────────────────────────┤
+  │ DELETE button GONE on aditya's post       │ IsAuthorOrReadOnly.has_object_permission returned False │
+  ├───────────────────────────────────────────┼─────────────────────────────────────────────────────────┤
+  │ DELETE button STILL THERE on akash's post │ Same method returned True for the author                │
+  ├───────────────────────────────────────────┼─────────────────────────────────────────────────────────┤
+  │ 403 from curl                             │ The check fires server-side too — not just UI hiding    │
+  └───────────────────────────────────────────┴─────────────────────────────────────────────────────────┘
+
+  If all four behave as described, concept #12 is locked in and we move to full-text search.
+
+✻ Brewed for 44s                   
+                                                                                          
+※ recap: Goal: Phase 3 Blog + REST API, ~65% done. Current task: testing the new IsAuthorOrReadOnly permission. Next action: in /admin/,       
+  reassign one post to aditya, then visit /api/posts/<that_id>/ as akash and confirm the DELETE button is gone.                                
+                                                                                                                                               
+❯ [Image #1] [Image #2] also note image 2 well analyse well even the top right corner                                                          
+  ⎿  [Image #1]                                                                                                                                
+  ⎿  [Image #2]                                                                                                                                
+                                                                                                                                               
+● Two things from the images:                                                                                                                  
+   
+  1. Setup is correct. Image 1 confirms: post Post object (2) now has Author = aditya. Good — that's our test target.                          
+                  
+  2. Image 2 has two notable things:                                                                                                           
+                  
+  (a) The 404 is a URL typo. Look at the URL bar: 127.0.0.1:8000/api/posts/<2>/. You typed the literal angle brackets. In my instructions
+  <that_id> was a placeholder — replace the whole thing including the brackets with just the number. The URL should be:
+
+  http://127.0.0.1:8000/api/posts/2/
+
+  No < or >. That's why DRF says "Not found" — the URL pattern is looking for an integer and getting the literal string <2>.
+
+  (b) Top-right corner says akash. Even in incognito, you're logged in as akash. So this is actually still a valid test — akash trying to act
+  on a post he doesn't own. Just not the "aditya as a regular user" test we originally planned. Either works for proving the permission rule.
+
+  ---
+  Fix the URL and reload. Once you're at http://127.0.0.1:8000/api/posts/2/ (no brackets), here's what to look for:
+
+  ┌──────────────────────────────────────────────────────────────────────┬─────────────────────────────────────────────────────────────────┐
+  │                             Observation                              │                             Meaning                             │
+  ├──────────────────────────────────────────────────────────────────────┼─────────────────────────────────────────────────────────────────┤
+  │ Page loads, GET response shows the Dhruandhar post, but DELETE       │ ✅ IsAuthorOrReadOnly blocked write access (akash isn't the     │
+  │ button + PUT form are gone                                           │ author of this one)                                             │
+  ├──────────────────────────────────────────────────────────────────────┼─────────────────────────────────────────────────────────────────┤
+  │ DELETE button still visible                                          │ ❌ Permission class isn't wired right — paste api_views.py to   │
+  │                                                                      │ me                                                              │
+  ├──────────────────────────────────────────────────────────────────────┼─────────────────────────────────────────────────────────────────┤
+  │ 404 again                                                            │ URL still typed wrong — must be just 2, no other characters     │
+  └─────────────────────────────────────────────────
