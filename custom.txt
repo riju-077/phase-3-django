@@ -1,0 +1,167 @@
+ Good call. Starting with concept #12 — custom permissions, which closes the security hole from last session.                                 
+                                                                                                                                               
+  Before any code or even a paper sketch, let me make sure the bug we're fixing is concrete in your head. One story, then I'll pause.          
+   
+  ---                                                                                                                                          
+  The scene (user-POV):
+
+  Akash spends two hours writing a long post: "Why Dhurandhar 2025 will redefine action cinema." Hits publish. Goes to bed happy.
+
+  Aditya — a regular user, not a moderator, not an admin — logs in from his phone. Out of curiosity he opens /api/posts/7/ (Akash's post). He
+  sees a red DELETE button right there in the browsable API. He clicks it. Browser says 204 No Content.
+
+  Akash's post is gone. Aditya didn't write it. Aditya isn't staff. He just... clicked delete on someone else's work, and the site let him.
+
+  Tomorrow morning Akash refreshes the homepage and his post has vanished. No trace, no warning, no audit trail. He doesn't even know who did
+  it.
+
+  That's the bug. Right now your blog behaves like a public whiteboard where anyone with an account can erase anyone else's writing.
+
+  ---
+  Quick check before we go further: does the bug feel real now? And — gut answer, no Django syntax — whose responsibility do you think it is to
+   stop Aditya? The form? The view? The database? Something else?
+
+✻ Worked for 18s                     
+
+❯ view ok lets solve it                                                                                                                        
+                                              
+● Right — it's the view's job. But DRF formalizes this into its own little slot called a permission class. The view doesn't write the check    
+  inline; it delegates to a small reusable class whose only job is to answer one question: "is this request allowed?"                          
+                                                                                                                                               
+  You've already been using one without writing it: IsAuthenticatedOrReadOnly (in your REST_FRAMEWORK settings). That's a permission class
+  shipped by DRF. It answers "are you logged in?". We're going to write a sibling that answers "is this YOUR post?" and stack them together.   
+                  
+  The mental model:
+
+  Request comes in
+     ↓
+  DRF runs each permission class in order
+     ↓
+  ALL must say "yes" → view runs
+  ANY says "no" → 403 Forbidden, view never runs
+
+  Same shape as middleware — a chain of small checks before the real work.
+
+  ---
+  Now the paper sketch (rule in plain English, no Django syntax yet). Fill this in for me, in your own words:
+
+  ▎ "Allow the request if _________, OR if _________."
+
+  Two clauses. Think about it from the reader's POV — what should a random anonymous person be able to do, and what should only the post's
+  author be able to do?
+
+✻ Sautéed for 20s
+
+※ recap: We're on Phase 3 concept #12 — adding a custom permission so users can only edit/delete their own posts. Next: fill in the rule "Allow
+   the request if ___, OR if ___" in plain English. (disable recaps in /config)
+                                                                                                                                               
+❯ its user or throw a error                                                                                                                    
+                            
+● Close — but you've collapsed it to one clause, and that would lock too many people out.                                                      
+                                                                                                                                               
+  Walk through it with me as a story:                                                                                                          
+   
+  A random reader (not logged in, no account) opens /api/posts/7/ because someone tweeted the link. They just want to read the article.        
+                  
+  Under your current rule ("is it the author? else error"), what does that reader get back?
+
+  Right — a 403 Forbidden. They can't even read the post. That breaks the whole blog. A blog whose posts can't be read isn't a blog.
+
+  So the rule needs two allow-cases, split by what the request is trying to do:
+
+  - Reading the post (GET): anyone is allowed — logged in, logged out, doesn't matter.
+  - Changing or deleting the post (PUT, PATCH, DELETE): only allowed if you're the author.
+
+  Re-fill the blanks now:
+
+  ▎ "Allow the request if it's a _________ request, OR if the user is the _________ of this post."
+
+✻ Churned for 14s
+
+❯ read, author now lets do                                                                                                                     
+                           
+● Two clauses, perfect. Now to translate.                                                                                                      
+                                                                                                                                               
+  Step 1 — create the file posts/permissions.py (alongside models.py, views.py, etc.). New file, doesn't exist yet.                            
+   
+  Step 2 — the imports you'll need:                                                                                                            
+                  
+  from rest_framework.permissions import BasePermission, SAFE_METHODS
+
+  Two things landing here:
+  - BasePermission — the parent class. Same inheritance trick as ModelViewSet and ModelSerializer: subclass it, fill in the blank, parent does
+  the wiring.
+  - SAFE_METHODS — a tuple ('GET', 'HEAD', 'OPTIONS'). DRF gives you this constant so you don't hand-type the strings. These are the read-only
+  HTTP verbs.
+
+  Step 3 — the skeleton. Type this much:
+
+  class IsAuthorOrReadOnly(BasePermission):
+      def has_object_permission(self, request, view, obj):
+          # your two-clause rule goes here
+          # return True if allowed, False if not
+          pass
+
+  A few things to notice without me explaining yet — just so you can read it:
+  - Class name reads like a sentence: "is author or read-only". DRF convention.
+  - The method gets obj — that's the actual Post instance the request is about. So obj.author is the user who wrote it.
+  - request.user is whoever is making the request right now.
+  - request.method is the string 'GET', 'PUT', 'DELETE', etc.
+
+  Your turn. Replace pass with one return statement that encodes your two-clause English rule:
+
+  ▎ "Allow if it's a read request, OR if the user is the author of this post."
+
+  Use request.method, SAFE_METHODS, obj.author, and request.user. One line, two conditions joined by or.
+
+  Take a swing — even if the syntax is wobbly, write what you'd guess. We'll polish.
+
+✻ Brewed for 19s
+
+❯ ok i got it wht its for now just give me he answers and tell me wht chnages i need to make lets not waste time                               
+                                                                                                                 
+● Got it. Three changes, type them yourself.                                                                                                   
+                                                                                                                                               
+  ---                                                                                                                                          
+  1. New file — posts/permissions.py
+                                                                                                                                               
+  from rest_framework.permissions import BasePermission, SAFE_METHODS
+
+
+  class IsAuthorOrReadOnly(BasePermission):
+      def has_object_permission(self, request, view, obj):
+          if request.method in SAFE_METHODS:
+              return True
+          return obj.author == request.user
+
+  ---
+  2. Wire it into PostViewSet in posts/api_views.py.
+
+  Add the import at the top:
+  from .permissions import IsAuthorOrReadOnly
+
+  Then add permission_classes to your PostViewSet:
+  class PostViewSet(viewsets.ModelViewSet):
+      queryset = Post.objects.filter(published=True)
+      serializer_class = PostSerializer
+      permission_classes = [IsAuthenticatedOrReadOnly, IsAuthorOrReadOnly]
+
+      def perform_create(self, serializer):
+          serializer.save(author=self.request.user)
+
+  You'll also need to import IsAuthenticatedOrReadOnly at the top if it's not already there:
+  from rest_framework.permissions import IsAuthenticatedOrReadOnly
+
+  Why both classes: IsAuthenticatedOrReadOnly blocks anonymous users from POST/PUT/DELETE. IsAuthorOrReadOnly blocks
+  logged-in-but-not-the-author from PUT/DELETE on someone else's post. Both must say yes — defense in layers.
+
+  ---
+  3. No migration needed. Permissions are pure Python — no DB change.
+
+  ---
+  Test it:
+
+  1. Restart the dev server.
+  2. Log in as aditya (incognito window) → visit /api/posts/<some-akash-post>/
+  3. The DELETE button and PUT form should be gone (or DELETE returns 403 if you try via curl).
+  4. Log in as akash → visit one of his own posts → DELETE/PUT controls visible again.
