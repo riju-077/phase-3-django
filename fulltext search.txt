@@ -1,0 +1,578 @@
+My fault — I dumped too much. Let me restart with just one story, no diagrams, no code.                                                      
+                                                                                                                                               
+  ---                                                                                                                                          
+  A reader lands on your blog because someone tweeted about Ranveer Singh's new action film. They type into your search bar:                   
+                                                                                                                                               
+  ▎ ranveer singh action movies                                                                                                                
+                  
+  You've actually written four great posts that match what they want:
+
+  1. "Dhruandhar in japan" — body opens with "Ranveer Singh's spy-actioner will be released in Japan..."
+  2. "Why Ranveer is reinventing himself" — body talks about his action choices
+  3. "RANVEER SINGH ACTION HEROES OF 2026" — full-caps title
+  4. "How spy thrillers are evolving" — body names Ranveer Singh as the lead
+
+  If your search uses the naive approach you'd write on day one (WHERE title LIKE '%ranveer singh action movies%'), how many of these does it
+  find?
+
+  Zero.
+
+  No single post contains that exact phrase, in that exact order, in that exact case. The reader sees a blank "no results" page and leaves
+  thinking your blog has nothing on the topic. You actually wrote 4,000 words on it. The content is just quietly invisible.
+
+  ---
+  That's the bug full-text search fixes. It doesn't hunt for the literal phrase. It understands:
+
+  - "RANVEER" and "ranveer" are the same word (case-insensitivity)
+  - "movies" and "movie" are the same word (stemming — strips word endings)
+  - The reader's words can appear in title OR body, in any order, with other words between them
+  - Words like "the", "in", "a" are noise — ignored (stopwords)
+  - Some matches are better than others — a post with "Ranveer" in the title beats one that mentions him in passing in the body (ranking)
+
+  When your reader types those four words, full-text search returns all four posts, best match at the top. Reader stays. Reader reads.
+
+  ---
+  That's it. One sentence summary: full-text search means PostgreSQL understands what your reader meant, not just what they literally typed.
+
+  Got it? Yes/no — then we move to the next beat (which is the question of how PostgreSQL pulls this off so fast on a million posts).
+
+✻ Cooked for 39s                  
+                                                                                          
+❯ yes got it next beat                                                                                                                         
+                                                                                                                                               
+● Same blog, but imagine it grows. You've got 10 posts today. Imagine 10,000 next year, then a million.                                        
+                                                                                                                                               
+  If PostgreSQL had to re-do the smart work (lowercase + stem + drop stopwords + scan title and body) for every single post on every single    
+  search query, here's what your reader would experience:                                                                                      
+                                                                                                                                               
+  ┌─────────────┬────────────────────────────┬────────────────────────┐                                                                        
+  │ Posts in DB │ Naive search response time │    Reader behavior     │
+  ├─────────────┼────────────────────────────┼────────────────────────┤
+  │ 10          │ 50 ms                      │ fine                   │
+  ├─────────────┼────────────────────────────┼────────────────────────┤
+  │ 10,000      │ ~5 seconds                 │ bounces                │
+  ├─────────────┼────────────────────────────┼────────────────────────┤
+  │ 1,000,000   │ minutes                    │ their grandkids bounce │
+  └─────────────┴────────────────────────────┴────────────────────────┘
+
+  That's a non-starter at any real scale. So PostgreSQL plays a clever trick — do the smart work ONCE per post, save the result, reuse it
+  forever.
+
+  ---
+  The book-index analogy (this is the one to remember):
+
+  Open a 600-page programming textbook. You want to find the word "stemming".
+
+  - Without an index: flip through every page, scanning for "stemming". Takes an hour. Every reader who wants it pays this cost.
+  - With an index at the back: flip to the index, find "stemming → 247", jump to page 247. Three seconds. The author paid the index-building
+  cost once. Every reader after that benefits forever.
+
+  PostgreSQL's search_vector is the same trick.
+
+  ---
+  What "pre-chewing" actually does, every time you save a post:
+
+  PostgreSQL takes the title + body, runs them through:
+
+  1. Tokenize → split into words
+  2. Lowercase → "RANVEER" becomes "ranveer"
+  3. Stem → "movies" becomes "movi", "running" becomes "run"
+  4. Drop stopwords → "the", "in", "a" thrown out
+  5. Track positions → remember which word came where (so it can rank by closeness later)
+
+  The output is a tidy little chewed-up summary like:
+
+  'action':4 'dhurandhar':1 'japan':3 'ranveer':5 'releas':6 'singh':6 'spy':2
+
+  That gets saved into the search_vector column on that row.
+
+  When a reader searches "ranveer movies", PostgreSQL chews their query the same way → 'movi' 'ranveer' → and looks for those tokens inside the
+   pre-chewed column. Pre-chewed vs pre-chewed = lightning fast.
+
+  The GinIndex on top of that column is the cherry — it's a special index type built specifically for "find rows whose search_vector contains
+  these tokens." Without it, PostgreSQL would still have to scan every row's pre-chewed column. With it, it jumps straight to the matching rows
+   like the book index jumping to page 247.
+
+  ---
+  One sentence summary: the search_vector column stores the pre-chewed version of each post's text, and the GinIndex makes lookups against it
+  instant — that's why concept #2 added both.
+
+  Got it? Yes/no, then next beat is how do we actually populate that column?
+
+✻ Brewed for 31s
+
+❯ yes next beat also wht is concept 2 u just reffered to                                                                                       
+                                                         
+● Quick on concept #2: that was the Models lesson from CLAUDE.md — when you wrote Post and Category. You added these two lines and never used  
+  them:                                                                                                                                        
+                                                                                                                                               
+  search_vector = SearchVectorField(null=True, blank=True)   # the column                                                                      
+  indexes = [GinIndex(fields=['search_vector'])]             # the speed index                                                                 
+                                                                                                                                               
+  Both have been sitting there waiting since. This is what they were waiting for.
+
+  ---
+  Next beat — how does the search_vector column actually get filled?
+
+  Story first.
+
+  You ship the search feature tomorrow. A reader types "ranveer". Page returns... zero results. You panic-debug for an hour. The view runs, the
+   URL routes, the SearchQuery executes — but every single post's search_vector is NULL. PostgreSQL is searching a book whose index is blank.
+  It searches perfectly and finds nothing.
+
+  To avoid that bug, the write side of search has two chores, both non-negotiable:
+
+  ┌───────────────┬───────────────────┬───────────────────────────────────────────────────────────────────────────────────────────────────┐
+  │     Chore     │       When        │                                           What it does                                            │
+  ├───────────────┼───────────────────┼───────────────────────────────────────────────────────────────────────────────────────────────────┤
+  │ (a) Backfill  │ One-time, today   │ Chews the 5 posts already in your DB and fills their search_vector column.                        │
+  ├───────────────┼───────────────────┼───────────────────────────────────────────────────────────────────────────────────────────────────┤
+  │ (b)           │ Forever,          │ Every new post you create, every edit you save, re-chews and updates its search_vector            │
+  │ Keep-fresh    │ automatic         │ automatically.                                                                                    │
+  └───────────────┴───────────────────┴───────────────────────────────────────────────────────────────────────────────────────────────────┘
+
+  - Skip (a) → search returns nothing for posts you wrote before today. Old content invisible.
+  - Skip (b) → search returns nothing for posts you write after today. New content invisible.
+
+  You need both. They're a pair, like the column and the index were a pair.
+
+  ---
+  The plan we're going to follow:
+
+  1. First, do the backfill with one command in manage.py shell. Cheap, proves search will work against real data.
+  2. Then build a search view and confirm those 5 backfilled posts come back when a reader queries.
+  3. Then wire up keep-fresh so you never have to think about it again.
+
+  That order is on purpose: prove the read side works on real data before building the auto-update plumbing. If something breaks, you know
+  which side it broke on.
+
+  ---------------------------------------------------
+
+  Backfill — three steps in manage.py shell.                                                                                                   
+                                                                                                                                               
+  0. Make sure Postgres is running (manual-startup workflow):                                                                                  
+  net start postgresql-x64-18
+  (Admin PowerShell. Skip if already running.)                                                                                                 
+                  
+  1. Open the Django shell:
+  python manage.py shell
+
+  You'll see the >>> prompt. This is a Python REPL with Django already loaded — your models, your DB connection, all available.
+
+  2. Type these three lines (one at a time, hitting Enter after each):
+
+  from django.contrib.postgres.search import SearchVector
+  from posts.models import Post
+  Post.objects.update(search_vector=SearchVector('title', 'body'))
+
+  The third line returns a number — it's the count of rows updated. Should print 5 (or however many posts you have). That number is your
+  receipt.
+
+  ---
+  What just happened, line by line:
+
+  - SearchVector('title', 'body') — tells PostgreSQL: "chew the title and body of this row together — tokenize, lowercase, stem, drop stopwords
+   — and produce the search-ready blob."
+  - Post.objects.update(...) — runs ONE SQL UPDATE that touches every post in the table at once. Note: not .save() — .update() is faster,
+  bypasses model-level logic, and is exactly the right tool for a blanket backfill.
+  - The whole thing is one query on the database side. Even if you had a million posts, this is the right shape — let PostgreSQL loop, not
+  Python.
+
+  The SQL Django generates looks something like:
+  UPDATE posts_post
+  SET search_vector = to_tsvector('english', coalesce(title, '') || ' ' || coalesce(body, ''));
+
+  That's the "chew everything, store the result" operation, expressed as one SQL statement. Done in milliseconds.
+
+  ---
+  3. Verify it worked — pull one post and look at its search_vector:
+
+  p = Post.objects.first()
+  print(p.search_vector)
+
+  You should see something like:
+  'action':5 'dhurandhar':1 'japan':4 'ranveer':6 'releas':8 'singh':7 'spy':3
+
+  Each word lowercased + stemmed + with its position number. That is the pre-chewed blob the next concept will search against. If you see None,
+   the update didn't land — paste the error to me.
+
+  Exit the shell with exit() or Ctrl+Z then Enter (Windows).
+
+  -------------------------------------------------------------------------------------------------------------------------
+
+   Next beat — actually search the column.                                                                                                      
+                                                                                                                                               
+  Before touching any view code, let's prove the populated column works as a search target. Open the shell again:                              
+                                                                                                                                               
+  python manage.py shell                                                                                                                       
+                                                                                                                                               
+  Then type these to see the read side in action:
+
+  from django.contrib.postgres.search import SearchQuery
+  from posts.models import Post
+
+  # Test 1 — basic match
+  for p in Post.objects.filter(search_vector=SearchQuery('ranveer')):
+      print(p.title)
+
+  You should see every post that mentions Ranveer in title or body.
+
+  # Test 2 — stemming
+  for p in Post.objects.filter(search_vector=SearchQuery('movies')):
+      print(p.title)
+
+  Even posts that say "movie" (singular) should come back — both reduce to the same stem movi before comparing.
+
+  # Test 3 — case insensitivity
+  for p in Post.objects.filter(search_vector=SearchQuery('SINGH')):
+      print(p.title)
+
+  UPPERCASE query → matches anyway, because both sides got lowercased before comparing.
+
+  # Test 4 — junk word, expect zero
+  for p in Post.objects.filter(search_vector=SearchQuery('elephant')):
+      print(p.title)
+
+  Should print nothing — confirming search returns empty (not all posts) when there's no match.
+
+  ---
+  What's happening, in one table:
+
+  ┌────────────────────────────────────────┬────────────────────────────────────────────────────────────────────────────────────────────────┐
+  │                 Piece                  │                                              Job                                               │
+  ├────────────────────────────────────────┼────────────────────────────────────────────────────────────────────────────────────────────────┤
+  │ SearchQuery('ranveer')                 │ Chews the user's query the same way the column was chewed at backfill — tokenize, lowercase,   │
+  │                                        │ stem. So both sides speak the same language.                                                   │
+  ├────────────────────────────────────────┼────────────────────────────────────────────────────────────────────────────────────────────────┤
+  │ filter(search_vector=SearchQuery(...)) │ "Give me rows whose pre-chewed blob contains the chewed query." The GinIndex makes this        │
+  │                                        │ near-instant.                                                                                  │
+  └────────────────────────────────────────┴────────────────────────────────────────────────────────────────────────────────────────────────┘
+
+  SQL parallel (since you know SQL):
+
+  -- Roughly what PostgreSQL runs:
+  SELECT * FROM posts_post WHERE search_vector @@ to_tsquery('english', 'ranveer');
+
+  That @@ is PostgreSQL's "match" operator for tsvector vs tsquery. The ORM hides it behind clean Python.
+
+  ---
+  Run the four tests and tell me what each returns. Then next beat is ranking (best matches first), and the one after is wiring this into
+  /api/posts/?search=ranveer in the browser.
+
+✻ Cooked for 36s
+
+❯ if we have to test instead of doing this we can simply open the postgresql ui and see the column                                             
+                                                                                                   
+● Yes — totally valid, and a sharper instinct than running the shell. Use pgAdmin.                                                             
+                                                                                                                                               
+  Two things you can verify there:                                                                                                             
+   
+  1. The column actually got populated (one query):                                                                                            
+  SELECT id, title, search_vector FROM posts_post;
+  You'll see the search_vector column filled with the pre-chewed blobs ('action':5 'dhurandhar':1 'japan':4 ...). If any row shows NULL, the
+  backfill missed it.
+
+  2. The search MECHANISM works (the same four tests, in raw SQL):
+  -- Test 1 — basic match
+  SELECT title FROM posts_post WHERE search_vector @@ to_tsquery('english', 'ranveer');
+
+  -- Test 2 — stemming
+  SELECT title FROM posts_post WHERE search_vector @@ to_tsquery('english', 'movies');
+
+  -- Test 3 — case insensitivity
+  SELECT title FROM posts_post WHERE search_vector @@ to_tsquery('english', 'SINGH');
+
+  -- Test 4 — should return 0 rows
+  SELECT title FROM posts_post WHERE search_vector @@ to_tsquery('english', 'elephant');
+
+  That @@ is PostgreSQL's "match" operator. to_tsquery('english', 'movies') is the raw-SQL equivalent of SearchQuery('movies') — same chewing
+  rules.
+
+  ---
+  When to reach for which tool, going forward:
+
+  ┌─────────────────────────────────────┬────────────────────────────────────────────────────┐
+  │          Use pgAdmin when…          │             Use the Django shell when…             │
+  ├─────────────────────────────────────┼────────────────────────────────────────────────────┤
+  │ Inspecting actual table contents    │ Testing how the ORM translates Python → SQL        │
+  ├─────────────────────────────────────┼────────────────────────────────────────────────────┤
+  │ Confirming a migration landed       │ Testing a model method, signal, or save() override │
+  ├─────────────────────────────────────┼────────────────────────────────────────────────────┤
+  │ Debugging "is the data even there?" │ Testing app-level logic without spinning up a view │
+  └─────────────────────────────────────┴────────────────────────────────────────────────────┘
+
+  You'll naturally bounce between them. pgAdmin = "what's in the box?" Shell = "does my Python code do what I think?".
+-------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+
+
+
+
+ Beat — Ranking                                                                                                                               
+                                                                                                                                               
+  Story. Reader searches "ranveer". Your filter returns all 4 matching posts. But in what order?                                               
+                                                                                                                                               
+  Right now — whatever order Postgres feels like. No guarantee. The reader sees:                                                               
+                                                                                                                                               
+  1. "How spy thrillers are evolving" — Ranveer mentioned once in passing
+  2. "Why Ranveer is reinventing himself" — about his action choices
+  3. "Dhruandhar in japan" — Ranveer in the very first sentence
+  4. "RANVEER SINGH ACTION HEROES OF 2026" — full caps, heavy mention
+
+  Reader clicks #1 expecting the best match. Gets a tangential article. Bounces. The post that was exactly what they wanted sits at position 4
+  — never seen.
+
+  Same shape of bug as before — great content quietly invisible. This time because of bad ordering, not bad matching.
+
+  ---
+  The fix — SearchRank. A function that scores each row by:
+  - How many times the query words appear
+  - How tightly packed they are
+  - (Later, with weighted vectors) where they appear — title beats body
+
+  Higher score → better match. Order by score descending → best first.
+
+  ---
+  ORM (try this in manage.py shell):
+
+  from django.contrib.postgres.search import SearchQuery, SearchRank
+  from posts.models import Post
+
+  query = SearchQuery('ranveer')
+  posts = (
+      Post.objects
+      .filter(search_vector=query)                          # only matches
+      .annotate(rank=SearchRank('search_vector', query))    # add a rank score
+      .order_by('-rank')                                    # best first
+  )
+  for p in posts:
+      print(round(p.rank, 4), p.title)
+
+  Expect output like:
+  0.0608  RANVEER SINGH ACTION HEROES OF 2026
+  0.0301  Dhruandhar in japan
+  0.0150  Why Ranveer is reinventing himself
+  0.0075  How spy thrillers are evolving
+
+  The exact numbers are irrelevant — only the order matters.
+
+  ---
+  SQL parallel (in pgAdmin if you prefer there):
+
+  SELECT title,
+         ts_rank(search_vector, to_tsquery('english', 'ranveer')) AS rank
+  FROM posts_post
+  WHERE search_vector @@ to_tsquery('english', 'ranveer')
+  ORDER BY rank DESC;
+
+  Side-by-side:
+
+  ┌────────────────────────────────────┬─────────────────────────────────────────┐
+  │                ORM                 │                   SQL                   │
+  ├────────────────────────────────────┼─────────────────────────────────────────┤
+  │ SearchRank('search_vector', query) │ ts_rank(search_vector, to_tsquery(...)) │
+  ├────────────────────────────────────┼─────────────────────────────────────────┤
+  │ .annotate(rank=...)                │ AS rank (computed column)               │
+  ├────────────────────────────────────┼─────────────────────────────────────────┤
+  │ .order_by('-rank')                 │ ORDER BY rank DESC                      │
+  └────────────────────────────────────┴─────────────────────────────────────────┘
+
+  SearchRank is just Django's friendly wrapper over PostgreSQL's ts_rank function. Same trick as annotate(post_count=Count(...)) from concept
+  #5 — ORM adds a virtual column, then orders by it.
+
+  ---
+  Run it (shell or pgAdmin, your call). Confirm the order looks like "most-mentions-first." Then we wire all of this into
+  /api/posts/?search=ranveer so the reader can actually use it.
+
+  --------------------------------------------------------------------------------------------------------------------
+
+  Beat — wire search into the API
+
+  Now we plug all of this into /api/posts/?search=ranveer so the reader can actually use it.
+
+  Where the wiring goes: PostViewSet in posts/api_views.py. Specifically, you override one method called get_queryset — it's the hook ViewSet
+  calls to decide "which posts should this request see?" Currently you've set queryset = Post.objects.filter(published=True) as a class
+  attribute (a fixed list). Override get_queryset and you can build it dynamically per request — read query params, filter, annotate, sort,
+  return.
+
+  What you'll add:
+
+  from django.contrib.postgres.search import SearchQuery, SearchRank
+
+  class PostViewSet(viewsets.ModelViewSet):
+      serializer_class = PostSerializer
+      permission_classes = [IsAuthenticatedOrReadOnly, IsAuthorOrReadOnly]
+
+      def get_queryset(self):
+          queryset = Post.objects.filter(published=True)
+
+          search = self.request.query_params.get('search')
+          if search:
+              query = SearchQuery(search)
+              queryset = (
+                  queryset
+                  .annotate(rank=SearchRank('search_vector', query))
+                  .filter(rank__gte=0.001)
+                  .order_by('-rank')
+              )
+
+          return queryset
+
+      def perform_create(self, serializer):
+          serializer.save(author=self.request.user)
+
+  What changed:
+  1. Removed the queryset = Post.objects.filter(...) class attribute — replaced by the method.
+  2. Added get_queryset(self) — DRF calls this on every request to decide which rows are in scope.
+  3. self.request.query_params.get('search') — pulls the ?search=... value from the URL. Returns None if absent.
+  4. If a search term came in, annotate each row with a rank, filter to the relevant ones, order by rank descending. If no search term, return
+  the plain published-posts list — falls back to default behavior.
+
+  Why 0.001 not 0.1: CLAUDE.md uses 0.1 as a sane default, but with your tiny dataset rank values are tiny too. Lower threshold = nothing
+  legitimate gets filtered out during dev. Tune up later when you have more data.
+
+  ---
+  Test it after wiring:
+
+  ┌─────────────────────────────────────────────────────┬────────────────────────────────────────────────────────────────────────┐
+  │                         URL                         │                                Expected                                │
+  ├─────────────────────────────────────────────────────┼────────────────────────────────────────────────────────────────────────┤
+  │ http://127.0.0.1:8000/api/posts/                    │ All 5 published posts, default order (newest first)                    │
+  ├─────────────────────────────────────────────────────┼────────────────────────────────────────────────────────────────────────┤
+  │ http://127.0.0.1:8000/api/posts/?search=ranveer     │ Only posts mentioning Ranveer, ranked                                  │
+  ├─────────────────────────────────────────────────────┼────────────────────────────────────────────────────────────────────────┤
+  │ http://127.0.0.1:8000/api/posts/?search=blockbuster │ Posts about blockbusters (will still miss "Blocbuster" — typo problem) │
+  ├─────────────────────────────────────────────────────┼────────────────────────────────────────────────────────────────────────┤
+  │ http://127.0.0.1:8000/api/posts/?search=elephant    │ [] (empty list)                                                        │
+  └─────────────────────────────────────────────────────┴────────────────────────────────────────────────────────────────────────┘
+-------------------------------------------------------------------------------------------------------------------------------------------
+ Search works ✓. Now your pagination question — it's not a bug, it's a feature you turned on in concept #3 and forgot about.                
+                                                                                                                                               
+  ---                                                                                                                                          
+  Where it comes from: in blog/settings.py, your REST_FRAMEWORK dict has these two lines:                                                      
+  'DEFAULT_PAGINATION_CLASS': 'rest_framework.pagination.PageNumberPagination',                                                                
+  'PAGE_SIZE': 10,                                                                                                                             
+                  
+  DRF wraps every list endpoint's response in this envelope automatically:
+
+  ┌──────────┬────────────────────────────────────────────────────────────────────────────────────┐
+  │  Field   │                                      Meaning                                       │
+  ├──────────┼────────────────────────────────────────────────────────────────────────────────────┤
+  │ count    │ Total matching rows in the entire DB (not just this page). You have 5 posts → 5.   │
+  ├──────────┼────────────────────────────────────────────────────────────────────────────────────┤
+  │ next     │ URL to fetch the next page. null because all 5 fit on page 1 (under PAGE_SIZE=10). │
+  ├──────────┼────────────────────────────────────────────────────────────────────────────────────┤
+  │ previous │ URL to fetch the previous page. null because you're already on page 1.             │
+  ├──────────┼────────────────────────────────────────────────────────────────────────────────────┤
+  │ results  │ The actual posts for this page — up to PAGE_SIZE of them.                          │
+  └──────────┴────────────────────────────────────────────────────────────────────────────────────┘
+
+  Story for why this matters: imagine your blog grows to 50,000 posts. Without pagination, /api/posts/ would try to dump all 50,000 as one JSON
+   blob — multi-megabyte response, slow to serialize, slow to download, the browser chokes. With pagination, the client asks ?page=1, gets 10,
+  asks ?page=2 for the next 10, and so on. Same shape Google uses — "Showing 1–10 of 4,580,000 results."
+
+  See it in action right now: add ?page=1 to the URL — same response. Try ?page=2 — 404 (no more pages). If you change PAGE_SIZE: 10 to
+  PAGE_SIZE: 2, refresh, and now you'll see count: 5, next: "...?page=2", only 2 results. That's pagination doing its job.
+
+  You don't need to do anything — this is already wired and working. It just looks invisible because 5 < 10.
+-------------------------------------------------------------------------------------------------------------------------------------------
+
+ ---
+  Next beat — keep-fresh (the auto-update)
+
+  Right now you've got a hole. Backfill filled the search_vector for the 5 existing posts. But what happens the moment akash creates post #6
+  via the API or admin?
+
+  Story: akash writes a brilliant new post titled "Why Aamir Khan's comeback matters." Saves it. A reader searches aamir two minutes later.
+  Result: zero matches. The post exists, but its search_vector is NULL because nothing populated it on save. Backfill was a one-time chore — it
+   didn't install any future-facing logic.
+
+  So: every save (create or edit) needs to re-chew that post's text and update its search_vector. The clean Django way to do this is signals —
+  Django's pub/sub system. You "subscribe" to a model's post_save event, and Django runs your function every time that model gets saved.
+
+  The mental model:
+
+  Post.save() ──► Django fires "post_save" signal
+                            │
+                            ▼
+              Any subscribed function gets called
+                            │
+                            ▼
+              (Our function: update search_vector for this post)
+
+  Same pattern as JavaScript event listeners or any pub/sub system you've seen. Decouples the trigger (save) from the side-effect (update
+  vector).
+
+  ---
+  The code lives in posts/signals.py (new file). Three things in it:
+
+  from django.db.models.signals import post_save
+  from django.dispatch import receiver
+  from django.contrib.postgres.search import SearchVector
+  from .models import Post
+
+
+  @receiver(post_save, sender=Post)
+  def update_search_vector(sender, instance, **kwargs):
+      Post.objects.filter(pk=instance.pk).update(
+          search_vector=SearchVector('title', 'body')
+      )
+
+  Then wire it up in posts/apps.py so Django actually loads the signals at startup. Add this ready method to your PostsConfig class:
+
+  class PostsConfig(AppConfig):
+      default_auto_field = 'django.db.models.BigAutoField'
+      name = 'posts'
+
+      def ready(self):
+          from . import signals    # noqa: F401  — registers the signal handler
+
+  (The default_auto_field and name lines should already be there — only ready is new.)
+
+  ---
+  Why Post.objects.filter(pk=...).update(...) and NOT instance.search_vector = ...; instance.save():
+
+  If you call instance.save() inside a post_save handler, you trigger another post_save, which calls the handler again, which calls save()
+  again — infinite loop, server crash. Using .update() writes directly to the DB and bypasses the signal. Same trick as the backfill —
+  .update() doesn't fire save() events.
+
+  This is mistake-magnet territory. Worth the 10 seconds to internalize.
+
+  ---
+  Test plan after wiring:
+
+  1. Create a new post via /admin/ or /api/posts/ POST — title and body with some unique word like "spaceship".
+  2. Search /api/posts/?search=spaceship — should return your new post.
+  3. Edit an existing post, change body to mention "elephant" — search /api/posts/?search=elephant should now return it.
+  4. (Optional) Open pgAdmin, SELECT title, search_vector FROM posts_post; — confirm new/edited rows have populated vectors.
+--------------------------------------------------------------------
+
+ Your SQL error is the multi-word to_tsquery quirk I warned about earlier. to_tsquery doesn't accept plain English with spaces. Two ways to   
+  fix:                                                                                                                                         
+                                                                                                                                               
+  Easy fix: swap to_tsquery → plainto_tsquery:
+  SELECT title,
+         ts_rank(search_vector, plainto_tsquery('english', 'My Hero Academia')) AS rank
+  FROM posts_post
+  WHERE search_vector @@ plainto_tsquery('english', 'My Hero Academia')
+  ORDER BY rank DESC;
+
+  plainto_tsquery accepts free text and converts it to the boolean form internally. Use this anytime your query has spaces.
+
+  Or single-word version (simpler test):
+  SELECT title FROM posts_post WHERE search_vector @@ to_tsquery('english', 'academia');
+
+  ---
+  The great news: you added 2 new posts (My Hero Academia, Classroom of the Elite season 4) — perfect test of whether the signal fired. To
+  prove it directly, run this:
+
+  SELECT id, title, search_vector FROM posts_post ORDER BY id DESC LIMIT 2;
+
+  Two possibilities:
+
+  | If search_vector is populated for both new posts | Signal works ✅ — keep-fresh side is done |
+  | If search_vector is NULL for either | Signal didn't fire — check signals.py exists and apps.py has the ready() method calling from . import
+   signals |
+
+  Run that SELECT and tell me what you see. If populated, also try the API:
+
+  http://127.0.0.1:8000/api/posts/?search=academia
