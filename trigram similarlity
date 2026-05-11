@@ -1,0 +1,443 @@
+ Concept #9 — Trigram Similarity                                                                                                              
+                                                                                                                                             
+  You already met the bug today. Quick recap:                                                                                                  
+                                                                                                                                               
+  - akash wrote Dhurandhar 2025 Blockbuster (correct spelling)                                                                                 
+  - aditya wrote Dhruandhar in japan (typo — Dhru not Dhur)                                                                                    
+                                                                                                                                             
+  A reader searches dhurandhar. Full-text search finds 1 post. The other one is invisible because the stemmer treats dhurandhar and dhruandhar
+  as completely different tokens. Same bug shape we keep meeting — content quietly missing.
+
+  ---
+  Beat 1 — how trigram works (intuition only, no code)
+
+  Take any word and break it into overlapping 3-character chunks (called trigrams). That's it.
+
+  "dhurandhar" → ["dhu", "hur", "ura", "ran", "and", "ndh", "dha", "har"]
+  "dhruandhar" → ["dhr", "hru", "rua", "uan", "and", "ndh", "dha", "har"]
+
+  Now count shared chunks vs total chunks across both words:
+
+  ┌───────┬──────────────────┬──────────────────┐
+  │ Chunk │ In "dhurandhar"? │ In "dhruandhar"? │
+  ├───────┼──────────────────┼──────────────────┤
+  │ dhu   │ ✓                │ ✗                │
+  ├───────┼──────────────────┼──────────────────┤
+  │ hur   │ ✓                │ ✗                │
+  ├───────┼──────────────────┼──────────────────┤
+  │ ura   │ ✓                │ ✗                │
+  ├───────┼──────────────────┼──────────────────┤
+  │ dhr   │ ✗                │ ✓                │
+  ├───────┼──────────────────┼──────────────────┤
+  │ hru   │ ✗                │ ✓                │
+  ├───────┼──────────────────┼──────────────────┤
+  │ rua   │ ✗                │ ✓                │
+  ├───────┼──────────────────┼──────────────────┤
+  │ uan   │ ✗                │ ✓                │
+  ├───────┼──────────────────┼──────────────────┤
+  │ ran   │ ✓                │ ✗                │
+  ├───────┼──────────────────┼──────────────────┤
+  │ and   │ ✓                │ ✓                │
+  ├───────┼──────────────────┼──────────────────┤
+  │ ndh   │ ✓                │ ✓                │
+  ├───────┼──────────────────┼──────────────────┤
+  │ dha   │ ✓                │ ✓                │
+  ├───────┼──────────────────┼──────────────────┤
+  │ har   │ ✓                │ ✓                │
+  └───────┴──────────────────┴──────────────────┘
+
+  4 chunks shared out of 12 total → similarity ≈ 0.33. Above the typical threshold of 0.3, so they match.
+
+  That's the entire algorithm. No stemming, no language rules, no dictionaries — just pure character-overlap math. Which means it works on any
+  word in any language, including made-up ones, names, brand names, typos.
+
+  ---
+  The mental model — full-text vs trigram, side by side:
+
+  ┌─────────────────────┬─────────────────────────────────────────────────────────┬───────────────────────────────┐
+  │                     │                    Full-text search                     │      Trigram similarity       │
+  ├─────────────────────┼─────────────────────────────────────────────────────────┼───────────────────────────────┤
+  │ What it understands │ Meaning (running = run, movies = movie)                 │ Spelling (djangoo ≈ django)   │
+  ├─────────────────────┼─────────────────────────────────────────────────────────┼───────────────────────────────┤
+  │ Breaks text into    │ Words (after lowercasing, stemming)                     │ 3-char chunks                 │
+  ├─────────────────────┼─────────────────────────────────────────────────────────┼───────────────────────────────┤
+  │ Wins at             │ "the reader meant the same concept, in different words" │ "the reader misspelled it"    │
+  ├─────────────────────┼─────────────────────────────────────────────────────────┼───────────────────────────────┤
+  │ Loses at            │ Typos and brand names it's never seen                   │ Synonyms ("car" vs "vehicle") │
+  ├─────────────────────┼─────────────────────────────────────────────────────────┼───────────────────────────────┤
+  │ Production answer   │ Combine both with an OR                                 │ Combine both with an OR       │
+  └─────────────────────┴─────────────────────────────────────────────────────────┴───────────────────────────────┘
+---------------------------------------------------------------------------------------------------------
+
+Beat 2 — enable the trigram extension                                                                                                        
+                                                                                                                                               
+  Why an extension at all? PostgreSQL ships with a small core and a pile of optional features bundled but not loaded by default — trigram, GIS,
+   UUID generators, and others. You opt in per-database with one SQL command: CREATE EXTENSION pg_trgm;. Django wraps that command in a
+  migration operation called TrigramExtension() so it goes through your normal migrate workflow.                                               
+                  
+  Why a migration and not a one-off psql command? Migrations are reproducible. Today you enable it on your dev DB; six months from now when you
+   set up a staging/prod DB, running migrate on the fresh database enables it again automatically. No "wait, did we run that command?" mystery.
+
+  ---
+  Three steps. All in your terminal.
+
+  1. Generate an empty migration scaffold:
+
+  python manage.py makemigrations posts --empty --name enable_trigram_extension
+
+  This creates a new file under posts/migrations/ with a number prefix (probably 0002_enable_trigram_extension.py). It's empty — Django
+  scaffolded the structure but didn't put any operations in (because nothing in your models changed).
+
+  2. Open that file and replace its contents with this:
+
+  from django.db import migrations
+  from django.contrib.postgres.operations import TrigramExtension
+
+
+  class Migration(migrations.Migration):
+
+      dependencies = [
+          ('posts', '0001_initial'),
+      ]
+
+      operations = [
+          TrigramExtension(),
+      ]
+
+  Two things to notice:
+  - dependencies — the migration system's "this migration must run AFTER that one" graph. Django pre-filled this; just leave it.
+  - TrigramExtension() — the only operation. Translates to CREATE EXTENSION IF NOT EXISTS pg_trgm; at migrate time.
+
+  3. Apply it:
+
+  python manage.py migrate
+
+  You should see Django log:
+  Applying posts.0002_enable_trigram_extension... OK
+
+  ---
+  Verify in pgAdmin (optional, but worth doing once to see what the extension actually IS):
+
+  In a new query tab, against blog_db:
+  SELECT * FROM pg_extension;
+
+  You'll see a row for pg_trgm alongside the default plpgsql. That row is the extension being installed. From this moment on, blog_db knows
+  what trigrams are.
+
+  You can also do:
+  SELECT similarity('dhurandhar', 'dhruandhar');
+
+  Returns a number around 0.33. The same math from beat 1 — just done by PostgreSQL directly. This proves the extension is live before we even
+  touch Django.
+
+  ---
+  Run those three steps and tell me what you see. Then beat 3 is using TrigramSimilarity from Django to score real posts.
+------------------------------------------------------------------------------------------------------------------------------------
+
+Beat 3 — TrigramSimilarity from Django                                                                                                       
+                                                                                                                                             
+  This is the moment that proves the typo bug is dead.                                                                                         
+   
+  Open the shell:                                                                                                                              
+  python manage.py shell
+
+  Test 1 — Dhurandhar typo case (the one we kept hitting):
+  from django.contrib.postgres.search import TrigramSimilarity
+  from posts.models import Post
+
+  results = (
+      Post.objects
+      .annotate(similarity=TrigramSimilarity('title', 'dhurandhar'))
+      .filter(similarity__gte=0.3)
+      .order_by('-similarity')
+  )
+  for p in results:
+      print(round(p.similarity, 3), p.title)
+
+  Expected output (something like):
+  1.0    Dhurandhar 2025 Blockbuster
+  0.41   Dhruandhar in japan
+
+  Both posts. The first is an exact match (similarity = 1.0). The second is the typo, scored ~0.4 — above your 0.3 threshold, so it's in.
+  Compare to full-text search which only returned 1.
+
+  Test 2 — Blockbuster typo case:
+  results = (
+      Post.objects
+      .annotate(similarity=TrigramSimilarity('title', 'blockbuster'))
+      .filter(similarity__gte=0.3)
+      .order_by('-similarity')
+  )
+  for p in results:
+      print(round(p.similarity, 3), p.title)
+
+  Expected:
+  0.6X   Dhurandhar 2025 Blockbuster
+  0.4X   Raone india Blocbuster      ← the typo finally caught
+
+  Test 3 — wildly wrong query, expect zero:
+  results = (
+      Post.objects
+      .annotate(similarity=TrigramSimilarity('title', 'kubernetes'))
+      .filter(similarity__gte=0.3)
+      .order_by('-similarity')
+  )
+  for p in results:
+      print(round(p.similarity, 3), p.title)
+
+  Should print nothing. Confirms the threshold is doing its job — fuzzy doesn't mean "match anything."
+
+  ---
+  SQL parallel (drop into pgAdmin if you want to see it raw):
+
+  SELECT title, similarity(title, 'dhurandhar') AS sim
+  FROM posts_post
+  WHERE similarity(title, 'dhurandhar') >= 0.3
+  ORDER BY sim DESC;
+
+  ┌──────────────────────────────────────────┬─────────────────────────────────┐
+  │                   ORM                    │               SQL               │
+  ├──────────────────────────────────────────┼─────────────────────────────────┤
+  │ TrigramSimilarity('title', 'dhurandhar') │ similarity(title, 'dhurandhar') │
+  ├──────────────────────────────────────────┼─────────────────────────────────┤
+  │ .annotate(similarity=...)                │ AS sim                          │
+  ├──────────────────────────────────────────┼─────────────────────────────────┤
+  │ .filter(similarity__gte=0.3)             │ WHERE similarity(...) >= 0.3    │
+  ├──────────────────────────────────────────┼─────────────────────────────────┤
+  │ .order_by('-similarity')                 │ ORDER BY sim DESC               │
+  └──────────────────────────────────────────┴─────────────────────────────────┘
+
+  Same pattern as SearchRank — annotate a virtual column, filter on it, order by it.
+
+  ----------------------------------------------------
+Interesting result — only ONE post matched, not the two we expected. There's a real subtlety here worth catching.                            
+                                                                                                                                               
+  ---                                                                                                                                          
+  What happened:                                                                                                                               
+                                                                                                                                               
+  similarity('Dhurandhar 2025 Blockbuster', 'dhurandhar') = 0.39                                                                               
+                  
+  Even the exact-match post barely scraped above the threshold. Why? Because similarity() compares whole strings against whole strings. Your
+  title has extra words ("2025", "Blockbuster") that contribute trigrams the query doesn't have — and those extra trigrams dilute the score.
+
+  The math for "Dhruandhar in japan" vs "dhurandhar":
+  - title trigrams: ~22 (because "in japan" adds chunks too)
+  - query trigrams: ~10
+  - shared: ~4
+  - score: 4 / (22 + 10 − 4) ≈ 0.14 → below 0.3 → filtered out
+
+  So similarity() is the wrong tool when you're searching a short query inside a longer string. It's designed for full-string-to-full-string
+  comparison (like name dedup, where both sides are about the same length).
+
+  ---
+  The right tool: TrigramWordSimilarity (Django) / word_similarity() (PostgreSQL).
+
+  Instead of comparing whole strings, it finds the best-matching word inside the longer text and scores against that. Exactly what we want for
+  search.
+
+  Re-run test in the shell:
+
+  from django.contrib.postgres.search import TrigramWordSimilarity
+  from posts.models import Post
+
+  results = (
+      Post.objects
+      .annotate(similarity=TrigramWordSimilarity('dhurandhar', 'title'))
+      .filter(similarity__gte=0.3)
+      .order_by('-similarity')
+  )
+  for p in results:
+      print(round(p.similarity, 3), p.title)
+
+  Note the argument order is reversed: TrigramWordSimilarity('search_term', 'field_name') — the search query comes FIRST, the field comes
+  SECOND. This is the opposite of TrigramSimilarity. Easy to fumble; worth a mental sticky note.
+
+  You should now see both posts:
+  ~1.0    Dhurandhar 2025 Blockbuster
+  ~0.7    Dhruandhar in japan
+
+  SQL parallel for pgAdmin:
+  SELECT title, word_similarity('dhurandhar', title) AS sim
+  FROM posts_post
+  WHERE word_similarity('dhurandhar', title) >= 0.3
+  ORDER BY sim DESC;
+
+  Note word_similarity('term', column) — same reversed order.
+
+  ---
+  Quick mental model — when to use which:
+
+  ┌───────────────────────┬───────────────────────────────────────────────────────────────────────────────┐
+  │       Function        │                                   Use when                                    │
+  ├───────────────────────┼───────────────────────────────────────────────────────────────────────────────┤
+  │ TrigramSimilarity     │ Comparing two whole strings of similar length (name dedup, brand match)       │
+  ├───────────────────────┼───────────────────────────────────────────────────────────────────────────────┤
+  │ TrigramWordSimilarity │ Searching a short query inside a longer text (this is what real search needs) │
+  └───────────────────────┴───────────────────────────────────────────────────────────────────────────────┘
+
+  For our purposes — searching titles for a user-typed term — TrigramWordSimilarity is the right call.
+--------------------------------------------------------------------------------------------------------------------
+
+ Beat 4 — combine full-text + trigram with Q objects                                                                                          
+                                                                                                                                               
+  Why combine? Each catches what the other misses:                                                                                             
+                  
+  ┌────────────────────────────────────────────────────────┬─────────────────────────┬────────────────────────────┐
+  │                      Reader types                      │   Full-text catches?    │      Trigram catches?      │
+  ├────────────────────────────────────────────────────────┼─────────────────────────┼────────────────────────────┤
+  │ running (wants articles about runners)                 │ ✅ stems to run         │ ❌ very different from run │
+  ├────────────────────────────────────────────────────────┼─────────────────────────┼────────────────────────────┤
+  │ dhurandhar (correct spelling, but other post has typo) │ ⚠️  only the correct one │ ✅ both posts              │
+  ├────────────────────────────────────────────────────────┼─────────────────────────┼────────────────────────────┤
+  │ djurandhar (heavy typo)                                │ ❌ no match             │ ✅ still matches           │
+  ├────────────────────────────────────────────────────────┼─────────────────────────┼────────────────────────────┤
+  │ movies (wants singular too)                            │ ✅ stems to movi        │ ⚠️  only similar spellings  │
+  └────────────────────────────────────────────────────────┴─────────────────────────┴────────────────────────────┘
+
+  Real readers paraphrase AND misspell. Production search uses both clauses, joined with OR — match if EITHER side says yes.
+
+  ---
+  The blocker: .filter() defaults to AND. When you write .filter(rank__gte=0.001, similarity__gte=0.3), Django translates to WHERE rank >=
+  0.001 AND similarity >= 0.3. We need OR. Django's tool for that is Q objects.
+
+  from django.db.models import Q
+
+  # AND (default)
+  .filter(rank__gte=0.001, similarity__gte=0.3)
+
+  # OR — wrap each side in Q, join with |
+  .filter(Q(rank__gte=0.001) | Q(similarity__gte=0.3))
+
+  The operators:
+
+  ┌─────────────┬─────────┐
+  │  Q syntax   │   SQL   │
+  ├─────────────┼─────────┤
+  │ Q(a) | Q(b) │ a OR b  │
+  ├─────────────┼─────────┤
+  │ Q(a) & Q(b) │ a AND b │
+  ├─────────────┼─────────┤
+  │ ~Q(a)       │ NOT a   │
+  └─────────────┴─────────┘
+
+  That's it. Q is a wrapper that lets |, &, ~ mean OR / AND / NOT inside .filter(). Without Q, you can't express OR in a filter at all.
+
+  ---
+  Try the combined query in the shell:
+
+  from django.db.models import Q
+  from django.contrib.postgres.search import SearchQuery, SearchRank, TrigramWordSimilarity
+  from posts.models import Post
+
+  q = 'dhurandhar'
+  search_query = SearchQuery(q)
+
+  results = (
+      Post.objects
+      .annotate(
+          rank=SearchRank('search_vector', search_query),
+          similarity=TrigramWordSimilarity(q, 'title'),
+      )
+      .filter(Q(rank__gte=0.001) | Q(similarity__gte=0.3))
+      .order_by('-rank', '-similarity')
+  )
+
+  for p in results:
+      print(round(p.rank, 4), round(p.similarity, 3), p.title)
+
+  Expect both Dhurandhar posts. Each row's two scores tell you which side caught it — high rank = caught by full-text, high similarity = caught
+   by trigram.
+
+  Then test a heavy typo to prove trigram is doing real work:
+  q = 'djurandhar'   # nonsense word — won't be in the search_vector
+
+  Re-run the same block. Full-text returns nothing for this. Trigram still catches both real Dhurandhar posts. The OR clause saves the reader.
+
+  ---
+  SQL parallel (so the structure stays clear):
+  SELECT title,
+         ts_rank(search_vector, plainto_tsquery('english', 'dhurandhar')) AS rank,
+         word_similarity('dhurandhar', title) AS sim
+  FROM posts_post
+  WHERE (search_vector @@ plainto_tsquery('english', 'dhurandhar')
+         AND ts_rank(search_vector, plainto_tsquery('english', 'dhurandhar')) >= 0.001)
+     OR word_similarity('dhurandhar', title) >= 0.3
+  ORDER BY rank DESC, sim DESC;
+
+  The Django version is dramatically tidier than the raw SQL. That's the value of Q — keeps complex boolean filters readable.
+
+  ---
+  Run both queries (dhurandhar and djurandhar), tell me the output. Then beat 5 wires the combined search into your API as the new ?search=
+  behavior.
+------------------------------------------------------------------------------------------------------------
+
+ Both posts back. Quick observation worth catching — both rows have identical rank (0.06079271). That's not a coincidence: the body of        
+  "Dhruandhar in japan" actually contains the correct spelling "Dhurandhar" too (from "Ranveer Singh's spy-actioner Dhurandhar will be         
+  released..."). So the search_vector for that post has BOTH dhruandhar and dhurandhar tokens — hence full-text matched it just fine.          
+                                                                                                                                               
+  But trigram is the real safety net. If a post had ONLY the typo'd spelling anywhere, full-text would miss it and trigram would still catch   
+  it. Your DB just happened to have the correct spelling in the body, masking how brittle full-text alone would be.                            
+                  
+  ---
+  Beat 5 — wire combined search into the API
+
+  This is the final step for concept #9. Replace your current get_queryset in posts/api_views.py with this:
+
+  from django.db.models import Q
+  from django.contrib.postgres.search import (
+      SearchQuery, SearchRank, TrigramWordSimilarity,
+  )
+
+  class PostViewSet(viewsets.ModelViewSet):
+      serializer_class = PostSerializer
+      permission_classes = [IsAuthenticatedOrReadOnly, IsAuthorOrReadOnly]
+
+      def get_queryset(self):
+          queryset = Post.objects.filter(published=True)
+
+          search = self.request.query_params.get('search')
+          if search:
+              search_query = SearchQuery(search)
+              queryset = (
+                  queryset
+                  .annotate(
+                      rank=SearchRank('search_vector', search_query),
+                      similarity=TrigramWordSimilarity(search, 'title'),
+                  )
+                  .filter(Q(rank__gte=0.001) | Q(similarity__gte=0.3))
+                  .order_by('-rank', '-similarity')
+              )
+
+          return queryset
+
+      def perform_create(self, serializer):
+          serializer.save(author=self.request.user)
+
+  What changed from concept #8's version:
+  - Added two imports: Q and TrigramWordSimilarity
+  - The .annotate() now adds two scores (rank from FT, similarity from trigram)
+  - .filter() uses Q(...) | Q(...) for OR — match if either side passes
+  - .order_by('-rank', '-similarity') — full-text matches surface first; among ties, trigram score breaks them
+
+  ---
+  Restart server and test in browser:
+
+  ┌───────────────────────────────┬───────────────────────────────────────────────────────────────────────────────────────────────────┐
+  │              URL              │                                             Expected                                              │
+  ├───────────────────────────────┼───────────────────────────────────────────────────────────────────────────────────────────────────┤
+  │ /api/posts/?search=dhurandhar │ Both Dhurandhar posts (caught by both mechanisms)                                                 │
+  ├───────────────────────────────┼───────────────────────────────────────────────────────────────────────────────────────────────────┤
+  │ /api/posts/?search=djurandhar │ Both Dhurandhar posts (full-text fails, trigram saves it — proof that trigram is doing real work) │
+  ├───────────────────────────────┼───────────────────────────────────────────────────────────────────────────────────────────────────┤
+  │ /api/posts/?search=academia   │ "My Hero Academia"                                                                                │
+  ├───────────────────────────────┼───────────────────────────────────────────────────────────────────────────────────────────────────┤
+  │ /api/posts/?search=akademia   │ Still "My Hero Academia" (trigram tolerance)                                                      │
+  ├───────────────────────────────┼───────────────────────────────────────────────────────────────────────────────────────────────────┤
+  │ /api/posts/?search=elephant   │ count: 0, empty results                                                                           │
+  └───────────────────────────────┴───────────────────────────────────────────────────────────────────────────────────────────────────┘
+
+  Hit those URLs, tell me what comes back. If djurandhar returns the Dhurandhar posts, you've proven the trigram half is wired correctly —
+  that's the success signal.
+
+  Rule of thumb: full-text search for meaning, trigram for spelling. Production search uses both stacked with Q objects (you'll meet Q in beat
+  3). Reader gets matched whether they typed the right word or a fumbled-keyboard version.
