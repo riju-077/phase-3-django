@@ -1,0 +1,191 @@
+Next up — concept #4 cleanup, nested serializers. Right now your JSON response showed "author": 5 and "category": 4 — bare IDs. The frontend
+  has no idea who user 5 is without a second API call. We'll fix that so it shows {"id": 5, "username": "Riju"} directly.
+
+  Let me peek at your current serializer to give you exact edits.
+
+  Read 1 file (ctrl+o to expand)
+
+● The problem in one line
+
+  Bare IDs force the frontend to make a second API call just to find out "who is user 5?" Wasteful. Nested serializers give the full object
+  inline.
+
+  What to change — posts/serializers.py
+
+  Three edits in this one file:
+
+  Edit 1 — add a new serializer for User at the top (above CategorySerializer):
+
+  from django.contrib.auth.models import User
+
+  class AuthorSerializer(serializers.ModelSerializer):
+      class Meta:
+          model = User
+          fields = ['id', 'username']
+
+  This is just a tiny "what does an author look like in JSON" serializer. Same pattern as CategorySerializer — inherit ModelSerializer, fill
+  model + fields.
+
+  Edit 2 — make PostSerializer use nested objects for author and category. Add two field declarations at the top of the class (before class
+  Meta):
+
+  class PostSerializer(serializers.ModelSerializer):
+      author = AuthorSerializer(read_only=True)
+      category = CategorySerializer(read_only=True)
+
+      class Meta:
+          ...
+
+  read_only=True on these two means: "in responses, show the full nested object. On POST/PUT, ignore these fields."
+
+  Edit 3 — but now you can't set the category on POST anymore (it's read-only). Fix by adding a separate write-only field that maps incoming
+  category_id onto the model's category:
+
+  class PostSerializer(serializers.ModelSerializer):
+      author = AuthorSerializer(read_only=True)
+      category = CategorySerializer(read_only=True)
+      category_id = serializers.PrimaryKeyRelatedField(
+          queryset=Category.objects.all(),
+          source='category',
+          write_only=True,
+          required=False,
+          allow_null=True,
+      )
+
+      class Meta:
+          model = Post
+          fields = [
+              'id', 'title', 'body',
+              'author', 'category', 'category_id',
+              'created_at', 'updated_at',
+              'published', 'views',
+          ]
+          read_only_fields = ['author', 'views']
+
+  Decoding the new field:
+
+  ┌─────────────────────────────────┬────────────────────────────────────────────────────────────────────────────┐
+  │               Bit               │                                  Meaning                                   │
+  ├─────────────────────────────────┼────────────────────────────────────────────────────────────────────────────┤
+  │ PrimaryKeyRelatedField          │ Accepts a plain integer ID from the client                                 │
+  ├─────────────────────────────────┼────────────────────────────────────────────────────────────────────────────┤
+  │ queryset=Category.objects.all() │ Tells DRF which table to look the ID up in                                 │
+  ├─────────────────────────────────┼────────────────────────────────────────────────────────────────────────────┤
+  │ source='category'               │ "When this comes in, assign it to the model's category attribute"          │
+  ├─────────────────────────────────┼────────────────────────────────────────────────────────────────────────────┤
+  │ write_only=True                 │ Never appears in GET responses (the nested category already does that job) │
+  ├─────────────────────────────────┼────────────────────────────────────────────────────────────────────────────┤
+  │ required=False, allow_null=True │ Posts without a category are allowed (matches the model)                   │
+  └─────────────────────────────────┴────────────────────────────────────────────────────────────────────────────┘
+
+  This is the classic read/write split pattern in DRF. Output side: nested objects. Input side: bare IDs. Both live on the same serializer.
+
+  After you save the file
+
+  1. Restart the dev server.
+  2. Visit /api/posts/9/ — author and category should now appear as full objects.
+  3. POST a new post via the browsable form — you'll see a Category id dropdown instead of needing to type the raw ID. DRF auto-builds the
+  dropdown from queryset=Category.objects.all().
+
+  Type it in, save, hit the URL — tell me what the JSON looks like now.
+
+   Done. Three things landed in posts/serializers.py:
+
+  1. AuthorSerializer — new tiny class at the top, exposes only id and username from User.
+  2. PostSerializer now has nested fields — author and category are declared above class Meta as nested serializers with read_only=True. GET
+  responses get full objects; the write path ignores them.
+  3. category_id (write-only) — accepts a plain integer on POST/PUT and maps it to the model's category via source='category'. required=False, 
+  allow_null=True matches your model (category is optional).
+
+  Two notes on style:
+
+  - Kept each class's existing indentation as-is (CategorySerializer was 6-space, PostSerializer was 4-space — unchanged). Python doesn't care
+  that they differ, only that each class is internally consistent.
+  - Added one new import: from django.contrib.auth.models import User.
+
+  Test it now
+
+  1. Restart the dev server.
+  2. Visit /api/posts/9/ — author should now read as {"id": 5, "username": "..."} and category as {"id": 4, "name": "Anime", "slug": "anime",
+  "post_count": 2}.
+  3. Visit /api/posts/ and scroll the POST form at the bottom — you'll see a Category id dropdown listing all categories by name. Pick one,
+  fill title + body, hit POST. The created post should come back with the full nested category in the response.
+
+  Tell me what the JSON looks like.
+You're basically at the finish line. Here's the punch list:
+
+  [x]  1. PostgreSQL setup
+  [x]  2. Models + migrations
+  [x]  3. DRF setup
+  [x]  4. Serializers (nested ✅ just done)
+  [x]  5. annotate / aggregate
+  [ ]  6. Messages framework      ← only real concept left
+  [—]  7. Custom middleware       ← skipped (you use loguru)
+  [x]  8. Full-text search
+  [x]  9. Trigram similarity
+  [x] 10. DB locks / F()          ← just done
+  [x] 11. API views (CRUD via ModelViewSet)
+  [x] 12. Custom permissions
+  [x] 13. URL routing (DefaultRouter)
+  [ ] 14. Elasticsearch           ← optional stretch
+
+  Phase 3 progress: ~95% complete. 11 fully done, 1 intentionally skipped, 1 real concept left, 1 stretch goal.
+
+  ---
+  What concept #6 actually is
+
+  Flash messages on the HTML side — things like "Post created successfully!" in green at the top of the page after you save a form. You've been
+   API-only the whole time, so to teach #6 honestly you'd need to first build at least one HTML view (a create-post form, say), then add
+  messages.success(request, '...') and a {% if messages %} block in the template.
+
+  That's roughly 30 minutes of HTML detour — forms, templates, base.html, the works. Worth it if you want to feel the full Django stack (HTML +
+   API), or skippable if your real plans for the next app are mobile/React frontends pointing at the API.
+
+  What concept #14 is
+
+  Elasticsearch — a separate search service running on port 9200, replacing Postgres FT for huge datasets. Real pros often skip this; Postgres
+  FT (which you just built) handles 99% of real apps. Mostly a "I've touched it once" thing for the CV.
+
+  ---
+  Three honest options
+
+  1. Wrap Phase 3 here — declare victory at 95%, commit the pile of pending changes, move to Phase 4. Skip #6 and #14 as "good to know about,
+  not worth the time right now."
+  2. Do concept #6 — build one HTML create-post page, wire up messages, see the green "Success!" banner. Closes the HTML side of Django so
+  you've felt the full stack at least once.
+  3. Push to 100% with #14 — install Elasticsearch, wire django-elasticsearch-dsl, watch it sync from Postgres. Heaviest payoff/effort ratio of
+   the three.
+
+  My recommendation: option 1 or 2. Phase 3 already covered everything production-relevant — DRF, search, locks, permissions, indexes,
+  postgres. #14 is more "tourism" than learning.
+
+  Also worth doing regardless: commit the multi-session pile of changes before starting anything new. That mountain of uncommitted edits has
+  been building since concept #11.
+
+  Which way do you want to go?
+
+✻ Churned for 16s
+
+❯ wht do u mean by toursium                                                                                                                    
+
+● By "tourism" I mean: you visit the technology, take a photo, leave — without it actually changing how you build things.
+
+  The other Phase 3 concepts (DRF, full-text search, permissions, F() locks) all change the way you'll write every future project — they're
+  skills you'll reach for again next week, next year. Real learning compounds.
+
+  Elasticsearch is different. For 99% of real apps, Postgres full-text search (which you already built) is enough. You'd only reach for
+  Elasticsearch when you have millions of documents or need things Postgres can't do — like multi-language synonym dictionaries, complex
+  faceted search, autocomplete-as-you-type at massive scale.
+
+  So the realistic outcome of doing #14 right now:
+  - You install Elasticsearch (heavy — separate service, eats RAM).
+  - You wire one document class.
+  - You run one query against it.
+  - You never touch it again until a job interview asks "have you used ES?" and you say "yes, once."
+
+  That's tourism. You've been to Elasticsearch. You haven't learned Elasticsearch — that only happens when you're forced to solve a real
+  problem Postgres can't handle, which won't be in this project.
+
+  Compare with concept #6 (messages framework + an HTML page): tiny, but it locks in the other half of Django you've never seen — forms,
+  templates, the full request-to-HTML cycle. That's a skill, not a sightseeing trip.
+
