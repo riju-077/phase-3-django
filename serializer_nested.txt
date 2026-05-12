@@ -189,3 +189,21 @@ You're basically at the finish line. Here's the punch list:
   Compare with concept #6 (messages framework + an HTML page): tiny, but it locks in the other half of Django you've never seen — forms,
   templates, the full request-to-HTML cycle. That's a skill, not a sightseeing trip.
 
+
+
+
+Why you skipped Elasticsearch — the short version:
+
+  Postgres full-text search (which you already built) handles 99% of real apps. Elasticsearch only earns its keep at the extreme end — millions
+   of documents, multi-lingual synonym dictionaries, autocomplete-at-scale. None of that applies to your blog or to most apps you'll build
+  next.
+
+  Doing it now would mean: install a heavy separate service, wire one document class, run one query, never touch it again. You'd have visited
+  Elasticsearch, not learned it. The skills you put in this phase — DRF, F(), permissions, full-text + trigram — will compound across every
+  future project. Elasticsearch wouldn't.
+
+  Real engineers reach for ES when a real problem forces them to. You didn't have that problem. Skipping is the senior call.
+
+  ---
+  Phase 3 — done at ~95%. Eleven concepts, hundreds of lines of real code, a working REST API with search, fuzzy matching, atomic counters,
+  permissions, and indexes. Solid Django backend. Go enjoy the win.
